@@ -1,9 +1,12 @@
-# multas.py
 import os, re, shutil
 import pandas as pd
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QDialog, QFormLayout, QFileDialog, QSizePolicy
 from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QLineEdit, QTableWidget,
+    QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QDialog, QFormLayout, QFileDialog,
+    QSizePolicy, QScrollArea
+)
 from utils import ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible, build_multa_dir, _parse_dt_any
 from constants import ORGAOS, DATE_COLS, DATE_FORMAT
 from dialogs import SummaryDialog, ConferirFluigDialog
@@ -93,7 +96,6 @@ class InserirDialog(QDialog):
         if prefill_fluig:
             self.widgets["FLUIG"].setText(str(prefill_fluig).strip())
             self.on_fluig_leave(self.widgets["FLUIG"])
-
     def _apply_fase_pastores(self, code):
         path = cfg_get("pastores_file")
         try:
@@ -116,7 +118,6 @@ class InserirDialog(QDialog):
             if qd.isValid():
                 de.setDate(qd)
                 se.setCurrentText("Pago")
-
     def on_fluig_leave(self, le):
         code = str(le.text()).strip()
         if code in self.df["FLUIG"].astype(str).tolist():
@@ -146,7 +147,6 @@ class InserirDialog(QDialog):
         except:
             pass
         self._apply_fase_pastores(code)
-
     def salvar(self):
         new = {}
         for c,w in self.widgets.items():
@@ -166,7 +166,7 @@ class InserirDialog(QDialog):
             infr, ano, mes = new.get("INFRATOR",""), new.get("ANO",""), new.get("MES","")
             placa, notificacao, fluig = new.get("PLACA",""), new.get("NOTIFICACAO",""), new.get("FLUIG","")
             dest = build_multa_dir(infr, ano, mes, placa, notificacao, fluig)
-            os.makedirs(dest, exist_ok=True)
+            os.path.isdir(dest) or os.makedirs(dest, exist_ok=True)
             if not os.path.isdir(dest):
                 QMessageBox.warning(self,"Aviso","Pasta não criada")
         except:
@@ -174,7 +174,6 @@ class InserirDialog(QDialog):
         self.anexar_pdf()
         QMessageBox.information(self,"Sucesso","Multa inserida.")
         self.accept()
-
     def anexar_pdf(self):
         try:
             infr, ano, mes = self.widgets["INFRATOR"].text().strip(), self.widgets["ANO"].text().strip(), self.widgets["MES"].text().strip()
@@ -216,7 +215,6 @@ class EditarDialog(QDialog):
         btn_load.clicked.connect(self.load_record)
         btn_save.clicked.connect(self.save_record)
         btn_close.clicked.connect(self.reject)
-
     def load_record(self):
         key = self.le_key.text().strip()
         if not key: return
@@ -244,7 +242,6 @@ class EditarDialog(QDialog):
             else:
                 w=QLineEdit(self.df.at[i,c]); self.form.addRow(c,w); self.widgets[c]=w
         self.current_index = i
-
     def save_record(self):
         if not hasattr(self, "current_index"): return
         i = self.current_index
@@ -282,7 +279,6 @@ class ExcluirDialog(QDialog):
         v.addLayout(bar)
         btn_delete.clicked.connect(self.do_delete)
         btn_close.clicked.connect(self.reject)
-
     def do_delete(self):
         key = self.le_key.text().strip()
         if not key: return
@@ -340,7 +336,17 @@ class GeralMultasView(QWidget):
         root = QVBoxLayout(self)
         header_card = QFrame(); header_card.setObjectName("card"); apply_shadow(header_card, radius=18)
         hv = QVBoxLayout(header_card)
-        self.filtros_layout = QHBoxLayout()
+        title = QLabel("Multas em Aberto")
+        title.setFont(QFont("Arial", 18, weight=QFont.Weight.Bold))
+        hv.addWidget(title)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        self.filtros_layout = QHBoxLayout(inner)
+        self.filtros_layout.setContentsMargins(0,0,0,0)
+        self.filtros_layout.setSpacing(8)
         self.mode_filtros = {}; self.multi_filtros = {}; self.text_filtros = {}
         for coluna in self.cols_show:
             box = QVBoxLayout()
@@ -358,7 +364,8 @@ class GeralMultasView(QWidget):
             self._add_text_row(coluna, line2)
             btn_plus.clicked.connect(lambda _, c=coluna, l=line2: self._add_text_row(c, l))
             self.filtros_layout.addLayout(box)
-        hv.addLayout(self.filtros_layout)
+        scroll.setWidget(inner)
+        hv.addWidget(scroll)
         root.addWidget(header_card)
         table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
         tv = QVBoxLayout(table_card)
@@ -383,22 +390,18 @@ class GeralMultasView(QWidget):
         tv.addLayout(buttons)
         root.addWidget(table_card)
         self.preencher_tabela(self.df_filtrado)
-
     def _add_text_row(self, col, where):
         le = QLineEdit(); le.setPlaceholderText(f"Filtrar {col}..."); le.setMaximumWidth(self.max_pix); le.textChanged.connect(self.atualizar_filtro)
         self.text_filtros[col].append(le); where.addWidget(le)
-
     def recarregar(self):
         df = pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna("")
         self.df_original = ensure_status_cols(df, csv_path=cfg_get("geral_multas_csv"))
         self.df_filtrado = self.df_original.copy()
         self.cols_show = [c for c in self.df_original.columns if not c.endswith("_STATUS")]
         self.atualizar_filtro()
-
     def mostrar_visao(self):
         dlg = SummaryDialog(self.df_filtrado[self.cols_show])
         dlg.exec()
-
     def limpar_filtros(self):
         for mode in self.mode_filtros.values():
             mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
@@ -415,7 +418,6 @@ class GeralMultasView(QWidget):
             self.text_filtros[col] = [arr[0]]
             arr[0].blockSignals(False)
         self.atualizar_filtro()
-
     def atualizar_filtro(self):
         df = self.df_original.copy()
         for coluna in self.cols_show:
@@ -448,7 +450,6 @@ class GeralMultasView(QWidget):
                         ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
                 ms._update_text()
         self.preencher_tabela(self.df_filtrado)
-
     def preencher_tabela(self, df):
         show = df[self.cols_show].reset_index(drop=True)
         df_idx = df.reset_index(drop=True)
@@ -468,14 +469,12 @@ class GeralMultasView(QWidget):
                 self.tabela.setItem(i,j,it)
         self.tabela.resizeColumnsToContents()
         self.tabela.resizeRowsToContents()
-
     def exportar_excel(self):
         try:
             self.df_filtrado[self.cols_show].to_excel("geral_multas_filtrado.xlsx", index=False)
             QMessageBox.information(self,"Exportado","geral_multas_filtrado.xlsx criado.")
         except Exception as e:
             QMessageBox.critical(self,"Erro",str(e))
-
     def on_double_click(self, row, col):
         if self.parent_for_edit is None:
             return
@@ -498,21 +497,17 @@ class InfraMultasWindow(QWidget):
         if os.path.exists(csv):
             self.watcher.addPath(csv)
         self.watcher.fileChanged.connect(self._csv_changed)
-
     def _csv_changed(self, path):
         if not os.path.exists(path):
             QTimer.singleShot(500, lambda: self._readd_watch(path))
             return
         QTimer.singleShot(500, self.reload_geral)
-
     def _readd_watch(self, path):
         if os.path.exists(path):
             self.watcher.addPath(path)
         self.reload_geral()
-
     def reload_geral(self):
         self.view_geral.recarregar()
-
     def conferir_fluig(self):
         try:
             detalhamento_path = cfg_get("detalhamento_path")
@@ -542,29 +537,24 @@ class InfraMultasWindow(QWidget):
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(self,"Erro",str(e))
-
     def inserir(self, prefill_fluig=None):
         dlg = InserirDialog(self, prefill_fluig)
         dlg.exec()
         self.reload_geral()
-
     def editar(self):
         dlg = EditarDialog(self)
         dlg.exec()
         self.reload_geral()
-
     def editar_with_key(self, key):
         dlg = EditarDialog(self)
         dlg.le_key.setText(str(key))
         dlg.load_record()
         dlg.exec()
         self.reload_geral()
-
     def excluir(self):
         dlg = ExcluirDialog(self)
         dlg.exec()
         self.reload_geral()
-
     def fase_pastores(self):
         try:
             path = cfg_get("pastores_file")

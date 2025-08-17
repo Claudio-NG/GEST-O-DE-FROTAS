@@ -48,11 +48,11 @@ class LoginWindow(QWidget):
         super().__init__()
         from PyQt6.QtGui import QFont
         from utils import apply_shadow
-        flags = Qt.WindowType.Window | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowCloseButtonHint
+        flags = Qt.WindowType.Window | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint
         self.setWindowFlags(flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle("Login | Gestão de Frota")
-        self.resize(480, 340)
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
+        self.setFixedSize(self.size())
         wrap = QWidget(self); wrap.setObjectName("glass"); wrap.setGeometry(0,0,480,340); apply_shadow(wrap, radius=20, blur=60)
         v = QVBoxLayout(wrap); v.setContentsMargins(20,20,20,20)
         title = QLabel("Gestão de Frota"); title.setAlignment(Qt.AlignmentFlag.AlignCenter)

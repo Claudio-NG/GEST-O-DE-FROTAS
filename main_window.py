@@ -14,7 +14,6 @@ from base import BaseWindow
 from config import cfg_get
 from combustivel import CombustivelWindow
 
-
 class CenarioGeralWindow(QWidget):
     def __init__(self):
         super().__init__()

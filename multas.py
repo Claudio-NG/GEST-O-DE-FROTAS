@@ -1,0 +1,606 @@
+# multas.py
+import os, re, shutil
+import pandas as pd
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QMessageBox, QDialog, QFormLayout, QFileDialog, QSizePolicy
+from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher, pyqtSignal
+from PyQt6.QtGui import QColor, QFontMetrics
+from utils import ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible, build_multa_dir, _parse_dt_any
+from constants import ORGAOS, DATE_COLS, DATE_FORMAT
+from dialogs import SummaryDialog, ConferirFluigDialog
+from config import cfg_get
+
+class CheckableComboBox(QComboBox):
+    changed = pyqtSignal()
+    def __init__(self, values):
+        super().__init__()
+        self.set_values(values)
+        self.view().pressed.connect(self._toggle)
+        self._update_text()
+    def set_values(self, values):
+        self.blockSignals(True)
+        self.clear()
+        vals = sorted({str(v) for v in values if str(v).strip()})
+        if not vals:
+            self.addItem("(vazio)")
+            idx = self.model().index(0, 0)
+            self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        else:
+            for i, v in enumerate(vals):
+                self.addItem(v)
+                idx = self.model().index(i, 0)
+                self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        self.blockSignals(False)
+        self._update_text()
+    def _toggle(self, index):
+        st = self.model().data(index, Qt.ItemDataRole.CheckStateRole)
+        ns = Qt.CheckState.Unchecked if st == Qt.CheckState.Checked else Qt.CheckState.Checked
+        self.model().setData(index, ns, Qt.ItemDataRole.CheckStateRole)
+        self._update_text()
+        self.changed.emit()
+    def selected_values(self):
+        out = []
+        for i in range(self.count()):
+            idx = self.model().index(i, 0)
+            st = self.model().data(idx, Qt.ItemDataRole.CheckStateRole)
+            if st == Qt.CheckState.Checked:
+                out.append(self.itemText(i))
+        return out
+    def _update_text(self):
+        n = len(self.selected_values())
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setText("Todos" if n == 0 else f"{n} selecionados")
+        self.setEditable(False)
+
+class InserirDialog(QDialog):
+    def __init__(self, parent, prefill_fluig=None):
+        super().__init__(parent)
+        self.setWindowTitle("Inserir Multa")
+        self.resize(720, 560)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._csv = cfg_get("geral_multas_csv")
+        self.df = ensure_status_cols(pd.read_csv(self._csv, dtype=str).fillna(""), csv_path=self._csv)
+        form = QFormLayout(self)
+        self.widgets = {}
+        fields = ["FLUIG"] + [c for c in self.df.columns if not c.endswith("_STATUS") and c!="FLUIG"]
+        for c in fields:
+            if c in DATE_COLS:
+                from PyQt6.QtWidgets import QDateEdit
+                d = QDateEdit(); d.setCalendarPopup(True); d.setDisplayFormat(DATE_FORMAT)
+                d.setMinimumDate(QDate(1752,9,14)); d.setSpecialValueText("")
+                d.setDate(d.minimumDate())
+                s = QComboBox(); s.addItems(["","Pendente","Pago","Vencido"])
+                box = QWidget(); hb = QHBoxLayout(box); hb.setContentsMargins(0,0,0,0); hb.addWidget(d); hb.addWidget(s)
+                form.addRow(c, box); self.widgets[c]=(d,s)
+            elif c=="ORGÃO":
+                cb=QComboBox(); cb.addItems(ORGAOS); form.addRow(c,cb); self.widgets[c]=cb
+            else:
+                w=QLineEdit()
+                if c=="FLUIG":
+                    from PyQt6.QtWidgets import QCompleter
+                    comp=QCompleter(sorted(self.df["FLUIG"].dropna().astype(str).unique()))
+                    comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    w.setCompleter(comp)
+                    w.editingFinished.connect(lambda le=w: self.on_fluig_leave(le))
+                form.addRow(c,w); self.widgets[c]=w
+        bar = QHBoxLayout()
+        btn_save = QPushButton("Salvar"); btn_pdf = QPushButton("Anexar PDF"); btn_close = QPushButton("Fechar")
+        bar.addWidget(btn_save); bar.addStretch(1); bar.addWidget(btn_pdf); bar.addWidget(btn_close)
+        form.addRow(bar)
+        btn_save.clicked.connect(self.salvar)
+        btn_pdf.clicked.connect(self.anexar_pdf)
+        btn_close.clicked.connect(self.reject)
+        if prefill_fluig:
+            self.widgets["FLUIG"].setText(str(prefill_fluig).strip())
+            self.on_fluig_leave(self.widgets["FLUIG"])
+
+    def _apply_fase_pastores(self, code):
+        path = cfg_get("pastores_file")
+        try:
+            dfp = pd.read_excel(path, dtype=str).fillna("")
+        except:
+            return
+        fcol = next((c for c in dfp.columns if "fluig" in c.lower()), None)
+        dcol = next((c for c in dfp.columns if "data" in c.lower() and "pastor" in c.lower()), None)
+        tcol = next((c for c in dfp.columns if "tipo" in c.lower()), None)
+        if not fcol or not dcol or not tcol:
+            return
+        row = dfp[dfp[fcol].astype(str).str.strip().eq(str(code).strip())]
+        if row.empty:
+            return
+        tipo = str(row[tcol].iloc[0]).upper()
+        data = str(row[dcol].iloc[0]).strip()
+        if ("PASTOR" in tipo) and data and "SGU" in self.widgets:
+            de, se = self.widgets["SGU"]
+            qd = _parse_dt_any(data)
+            if qd.isValid():
+                de.setDate(qd)
+                se.setCurrentText("Pago")
+
+    def on_fluig_leave(self, le):
+        code = str(le.text()).strip()
+        if code in self.df["FLUIG"].astype(str).tolist():
+            QMessageBox.warning(self,"Erro","FLUIG existe"); le.clear(); return
+        try:
+            x = pd.read_excel(cfg_get("detalhamento_path"),
+                              usecols=["Nº Fluig","Placa","Nome","AIT","Data Infração","Data Limite","Status"], dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.warning(self,"Aviso",str(e)); return
+        row = x[x["Nº Fluig"].astype(str).str.strip()==code]
+        if row.empty:
+            self._apply_fase_pastores(code)
+            return
+        self.widgets["PLACA"].setText(row["Placa"].iloc[0])
+        self.widgets["INFRATOR"].setText(row["Nome"].iloc[0])
+        self.widgets["NOTIFICACAO"].setText(row["AIT"].iloc[0])
+        try:
+            dt = pd.to_datetime(row["Data Infração"].iloc[0], dayfirst=False)
+            from constants import PORTUGUESE_MONTHS
+            self.widgets["MES"].setText(PORTUGUESE_MONTHS.get(dt.month,""))
+            self.widgets["ANO"].setText(str(dt.year))
+        except:
+            pass
+        try:
+            d2 = pd.to_datetime(row["Data Limite"].iloc[0], dayfirst=False)
+            de,_ = self.widgets["DATA INDITACAO"]; de.setDate(QDate(d2.year,d2.month,d2.day))
+        except:
+            pass
+        self._apply_fase_pastores(code)
+
+    def salvar(self):
+        new = {}
+        for c,w in self.widgets.items():
+            if isinstance(w,tuple):
+                d,s = w
+                new[c] = "" if d.date()==d.minimumDate() else d.date().toString(DATE_FORMAT)
+                new[f"{c}_STATUS"] = s.currentText()
+            else:
+                new[c] = w.currentText() if isinstance(w,QComboBox) else w.text().strip()
+        if new.get("FLUIG","") in self.df["FLUIG"].astype(str).tolist():
+            QMessageBox.warning(self,"Erro","FLUIG já existe"); return
+        self.df.loc[len(self.df)] = new
+        csv = cfg_get("geral_multas_csv")
+        os.makedirs(os.path.dirname(csv), exist_ok=True)
+        self.df.to_csv(csv, index=False)
+        try:
+            infr, ano, mes = new.get("INFRATOR",""), new.get("ANO",""), new.get("MES","")
+            placa, notificacao, fluig = new.get("PLACA",""), new.get("NOTIFICACAO",""), new.get("FLUIG","")
+            dest = build_multa_dir(infr, ano, mes, placa, notificacao, fluig)
+            os.makedirs(dest, exist_ok=True)
+            if not os.path.isdir(dest):
+                QMessageBox.warning(self,"Aviso","Pasta não criada")
+        except:
+            pass
+        self.anexar_pdf()
+        QMessageBox.information(self,"Sucesso","Multa inserida.")
+        self.accept()
+
+    def anexar_pdf(self):
+        try:
+            infr, ano, mes = self.widgets["INFRATOR"].text().strip(), self.widgets["ANO"].text().strip(), self.widgets["MES"].text().strip()
+            placa, notificacao, fluig = self.widgets["PLACA"].text().strip(), self.widgets["NOTIFICACAO"].text().strip(), self.widgets["FLUIG"].text().strip()
+            if not all([infr,ano,mes,placa,notificacao,fluig]): return
+            dest = build_multa_dir(infr, ano, mes, placa, notificacao, fluig)
+            os.makedirs(dest, exist_ok=True)
+            pdf,_ = QFileDialog.getOpenFileName(self,"Selecione PDF","","PDF Files (*.pdf)")
+            if pdf:
+                shutil.copy(pdf, os.path.join(dest, os.path.basename(pdf)))
+        except:
+            pass
+
+class EditarDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Editar Multa")
+        self.resize(720, 560)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        csv = cfg_get("geral_multas_csv")
+        self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
+        self.le_key = QLineEdit(); self.le_key.setPlaceholderText("Digite FLUIG para carregar")
+        from PyQt6.QtWidgets import QCompleter
+        comp = QCompleter(sorted(self.df["FLUIG"].dropna().astype(str).unique()))
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.le_key.setCompleter(comp)
+        btn_load = QPushButton("Carregar")
+        top.addWidget(self.le_key); top.addWidget(btn_load)
+        v.addLayout(top)
+        self.formw = QWidget(); self.form = QFormLayout(self.formw)
+        self.widgets = {}
+        v.addWidget(self.formw)
+        bar = QHBoxLayout()
+        btn_save = QPushButton("Salvar"); btn_close = QPushButton("Fechar")
+        bar.addWidget(btn_save); bar.addStretch(1); bar.addWidget(btn_close)
+        v.addLayout(bar)
+        btn_load.clicked.connect(self.load_record)
+        btn_save.clicked.connect(self.save_record)
+        btn_close.clicked.connect(self.reject)
+
+    def load_record(self):
+        key = self.le_key.text().strip()
+        if not key: return
+        csv = cfg_get("geral_multas_csv")
+        self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
+        rows = self.df.index[self.df["FLUIG"].astype(str)==key].tolist()
+        if not rows:
+            QMessageBox.warning(self,"Aviso","FLUIG não encontrado"); return
+        i = rows[0]
+        for c in [col for col in self.df.columns if not col.endswith("_STATUS")]:
+            if c in self.widgets: continue
+            if c in DATE_COLS:
+                from PyQt6.QtWidgets import QDateEdit
+                d = QDateEdit(); d.setCalendarPopup(True); d.setDisplayFormat(DATE_FORMAT)
+                d.setMinimumDate(QDate(1752,9,14)); d.setSpecialValueText("")
+                qd = to_qdate_flexible(self.df.at[i,c])
+                d.setDate(qd if qd.isValid() else d.minimumDate())
+                s = QComboBox(); s.addItems(["","Pendente","Pago","Vencido"])
+                s.setCurrentText(self.df.at[i, f"{c}_STATUS"] if f"{c}_STATUS" in self.df.columns else "")
+                box = QWidget(); hb = QHBoxLayout(box); hb.setContentsMargins(0,0,0,0); hb.addWidget(d); hb.addWidget(s)
+                self.form.addRow(c,box); self.widgets[c]=(d,s)
+            elif c=="ORGÃO":
+                cb=QComboBox(); cb.addItems(ORGAOS); cb.setCurrentText(self.df.at[i,c])
+                self.form.addRow(c,cb); self.widgets[c]=cb
+            else:
+                w=QLineEdit(self.df.at[i,c]); self.form.addRow(c,w); self.widgets[c]=w
+        self.current_index = i
+
+    def save_record(self):
+        if not hasattr(self, "current_index"): return
+        i = self.current_index
+        for c,w in self.widgets.items():
+            if isinstance(w,tuple):
+                d,s = w
+                self.df.at[i,c] = "" if d.date()==d.minimumDate() else d.date().toString(DATE_FORMAT)
+                self.df.at[i,f"{c}_STATUS"] = s.currentText()
+            else:
+                self.df.at[i,c] = w.currentText() if isinstance(w,QComboBox) else w.text().strip()
+        self.df.to_csv(cfg_get("geral_multas_csv"), index=False)
+        QMessageBox.information(self,"Sucesso","Multa editada.")
+        self.accept()
+
+class ExcluirDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Excluir Multa")
+        self.resize(520, 160)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        csv = cfg_get("geral_multas_csv")
+        self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
+        self.le_key = QLineEdit(); self.le_key.setPlaceholderText("Digite FLUIG para excluir")
+        from PyQt6.QtWidgets import QCompleter
+        comp = QCompleter(sorted(self.df["FLUIG"].dropna().astype(str).unique()))
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.le_key.setCompleter(comp)
+        btn_delete = QPushButton("Excluir")
+        top.addWidget(self.le_key); top.addWidget(btn_delete)
+        v.addLayout(top)
+        bar = QHBoxLayout()
+        btn_close = QPushButton("Fechar"); bar.addStretch(1); bar.addWidget(btn_close)
+        v.addLayout(bar)
+        btn_delete.clicked.connect(self.do_delete)
+        btn_close.clicked.connect(self.reject)
+
+    def do_delete(self):
+        key = self.le_key.text().strip()
+        if not key: return
+        csv = cfg_get("geral_multas_csv")
+        self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
+        rows = self.df.index[self.df["FLUIG"].astype(str)==key].tolist()
+        if not rows:
+            QMessageBox.warning(self,"Aviso","FLUIG não encontrado"); return
+        i = rows[0]
+        try:
+            infr = str(self.df.at[i,"INFRATOR"]) if "INFRATOR" in self.df.columns else ""
+            ano = str(self.df.at[i,"ANO"]) if "ANO" in self.df.columns else ""
+            mes = str(self.df.at[i,"MES"]) if "MES" in self.df.columns else ""
+            placa = str(self.df.at[i,"PLACA"]) if "PLACA" in self.df.columns else ""
+            notificacao = str(self.df.at[i,"NOTIFICACAO"]) if "NOTIFICACAO" in self.df.columns else ""
+            fluig = str(self.df.at[i,"FLUIG"]) if "FLUIG" in self.df.columns else ""
+            root = cfg_get("multas_root")
+            sub = f"{placa}_{notificacao}_FLUIG({fluig})"
+            path = os.path.join(root, infr.strip(), str(ano).strip(), str(mes).strip(), sub)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                p = os.path.dirname(path)
+                root_abs = os.path.abspath(root)
+                for _ in range(3):
+                    if not p:
+                        break
+                    p_abs = os.path.abspath(p)
+                    if os.path.isdir(p) and not os.listdir(p) and os.path.commonpath([p_abs, root_abs]) == root_abs:
+                        try:
+                            os.rmdir(p)
+                        except:
+                            break
+                        p = os.path.dirname(p)
+                    else:
+                        break
+            if os.path.isdir(path):
+                QMessageBox.warning(self,"Aviso","Pasta não removida")
+        except:
+            pass
+        self.df = self.df.drop(i).reset_index(drop=True)
+        self.df.to_csv(csv, index=False)
+        QMessageBox.information(self,"Sucesso","Multa excluída.")
+        self.accept()
+
+class GeralMultasView(QWidget):
+    def __init__(self, parent_for_edit=None):
+        super().__init__()
+        self.parent_for_edit = parent_for_edit
+        fm = QFontMetrics(self.font())
+        self.max_pix = fm.horizontalAdvance("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        df = pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna("")
+        self.df_original = ensure_status_cols(df, csv_path=cfg_get("geral_multas_csv"))
+        self.df_filtrado = self.df_original.copy()
+        self.cols_show = [c for c in self.df_original.columns if not c.endswith("_STATUS")]
+        root = QVBoxLayout(self)
+        header_card = QFrame(); header_card.setObjectName("card"); apply_shadow(header_card, radius=18)
+        hv = QVBoxLayout(header_card)
+        self.filtros_layout = QHBoxLayout()
+        self.mode_filtros = {}; self.multi_filtros = {}; self.text_filtros = {}
+        for coluna in self.cols_show:
+            box = QVBoxLayout()
+            label = QLabel(coluna); label.setObjectName("colTitle"); label.setWordWrap(True); label.setMaximumWidth(self.max_pix)
+            line1 = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"]); mode.currentTextChanged.connect(self.atualizar_filtro)
+            ms = CheckableComboBox(self.df_original[coluna].dropna().astype(str).unique()); ms.changed.connect(self.atualizar_filtro)
+            line1.addWidget(mode); line1.addWidget(ms)
+            box.addWidget(label); box.addLayout(line1)
+            line2 = QVBoxLayout()
+            btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28)
+            row = QHBoxLayout(); row.addLayout(line2, 1); row.addWidget(btn_plus)
+            box.addLayout(row)
+            self.mode_filtros[coluna]=mode; self.multi_filtros[coluna]=ms; self.text_filtros[coluna]=[]
+            self._add_text_row(coluna, line2)
+            btn_plus.clicked.connect(lambda _, c=coluna, l=line2: self._add_text_row(c, l))
+            self.filtros_layout.addLayout(box)
+        hv.addLayout(self.filtros_layout)
+        root.addWidget(header_card)
+        table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
+        tv = QVBoxLayout(table_card)
+        self.tabela = QTableWidget()
+        self.tabela.setAlternatingRowColors(True)
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tabela.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tabela.setSortingEnabled(True)
+        self.tabela.horizontalHeader().setSortIndicatorShown(True)
+        self.tabela.cellDoubleClicked.connect(self.on_double_click)
+        tv.addWidget(self.tabela)
+        buttons = QHBoxLayout()
+        btn_visao = QPushButton("Visão Geral"); btn_visao.clicked.connect(self.mostrar_visao)
+        btn_limpar = QPushButton("Limpar filtros"); btn_limpar.clicked.connect(self.limpar_filtros)
+        btn_inserir = QPushButton("Inserir"); btn_inserir.clicked.connect(lambda: self.parent_for_edit.inserir())
+        btn_editar = QPushButton("Editar"); btn_editar.clicked.connect(lambda: self.parent_for_edit.editar())
+        btn_excluir = QPushButton("Excluir"); btn_excluir.setObjectName("danger"); btn_excluir.clicked.connect(lambda: self.parent_for_edit.excluir())
+        btn_fluig = QPushButton("CONFERIR FLUIG"); btn_fluig.clicked.connect(lambda: self.parent_for_edit.conferir_fluig())
+        btn_past = QPushButton("FASE PASTORES"); btn_past.clicked.connect(lambda: self.parent_for_edit.fase_pastores())
+        btn_export = QPushButton("Exportar Excel"); btn_export.clicked.connect(self.exportar_excel)
+        buttons.addWidget(btn_visao); buttons.addWidget(btn_limpar); buttons.addWidget(btn_inserir); buttons.addWidget(btn_editar); buttons.addWidget(btn_excluir); buttons.addWidget(btn_fluig); buttons.addWidget(btn_past); buttons.addStretch(1); buttons.addWidget(btn_export)
+        tv.addLayout(buttons)
+        root.addWidget(table_card)
+        self.preencher_tabela(self.df_filtrado)
+
+    def _add_text_row(self, col, where):
+        le = QLineEdit(); le.setPlaceholderText(f"Filtrar {col}..."); le.setMaximumWidth(self.max_pix); le.textChanged.connect(self.atualizar_filtro)
+        self.text_filtros[col].append(le); where.addWidget(le)
+
+    def recarregar(self):
+        df = pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna("")
+        self.df_original = ensure_status_cols(df, csv_path=cfg_get("geral_multas_csv"))
+        self.df_filtrado = self.df_original.copy()
+        self.cols_show = [c for c in self.df_original.columns if not c.endswith("_STATUS")]
+        self.atualizar_filtro()
+
+    def mostrar_visao(self):
+        dlg = SummaryDialog(self.df_filtrado[self.cols_show])
+        dlg.exec()
+
+    def limpar_filtros(self):
+        for mode in self.mode_filtros.values():
+            mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
+        for ms in self.multi_filtros.values():
+            vals = [ms.itemText(i) for i in range(ms.count())]
+            ms.set_values(vals)
+        for col, arr in self.text_filtros.items():
+            for i, le in enumerate(arr):
+                le.blockSignals(True)
+                if i == 0:
+                    le.clear()
+                else:
+                    le.setParent(None)
+            self.text_filtros[col] = [arr[0]]
+            arr[0].blockSignals(False)
+        self.atualizar_filtro()
+
+    def atualizar_filtro(self):
+        df = self.df_original.copy()
+        for coluna in self.cols_show:
+            mode = self.mode_filtros[coluna].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[coluna].astype(str)!=""]
+            elif mode == "Somente vazios":
+                df = df[df[coluna].astype(str)==""] 
+            sels = [s for s in self.multi_filtros[coluna].selected_values() if s]
+            if sels:
+                df = df[df[coluna].astype(str).isin(sels)]
+            termos = []
+            for le in self.text_filtros[coluna]:
+                t = le.text().strip()
+                if t:
+                    termos.append(t)
+            if termos:
+                s = df[coluna].astype(str).str.lower()
+                rgx = "|".join(re.escape(t.lower()) for t in termos)
+                df = df[s.str.contains(rgx, na=False)]
+        self.df_filtrado = df
+        for col in self.cols_show:
+            ms = self.multi_filtros[col]
+            current_sel = ms.selected_values()
+            ms.set_values(self.df_filtrado[col].dropna().astype(str).unique())
+            if current_sel:
+                for i in range(ms.count()):
+                    if ms.itemText(i) in current_sel:
+                        idx = ms.model().index(i, 0)
+                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+                ms._update_text()
+        self.preencher_tabela(self.df_filtrado)
+
+    def preencher_tabela(self, df):
+        show = df[self.cols_show].reset_index(drop=True)
+        df_idx = df.reset_index(drop=True)
+        self.tabela.clear()
+        self.tabela.setColumnCount(len(show.columns))
+        self.tabela.setRowCount(len(show))
+        self.tabela.setHorizontalHeaderLabels([str(c) for c in show.columns])
+        for i in range(len(show)):
+            for j,col in enumerate(show.columns):
+                val = "" if pd.isna(show.iat[i,j]) else str(show.iat[i,j])
+                it = QTableWidgetItem(val)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                it.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                if col in DATE_COLS:
+                    st = str(df_idx.iloc[i].get(f"{col}_STATUS",""))
+                    _paint_status(it, st)
+                self.tabela.setItem(i,j,it)
+        self.tabela.resizeColumnsToContents()
+        self.tabela.resizeRowsToContents()
+
+    def exportar_excel(self):
+        try:
+            self.df_filtrado[self.cols_show].to_excel("geral_multas_filtrado.xlsx", index=False)
+            QMessageBox.information(self,"Exportado","geral_multas_filtrado.xlsx criado.")
+        except Exception as e:
+            QMessageBox.critical(self,"Erro",str(e))
+
+    def on_double_click(self, row, col):
+        if self.parent_for_edit is None:
+            return
+        dfv = self.df_filtrado.reset_index(drop=True)
+        key = dfv.iloc[row].get("FLUIG","")
+        if not key:
+            return
+        self.parent_for_edit.editar_with_key(key)
+
+class InfraMultasWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Infrações e Multas")
+        self.resize(1240, 820)
+        lay = QVBoxLayout(self)
+        self.view_geral = GeralMultasView(self)
+        lay.addWidget(self.view_geral)
+        self.watcher = QFileSystemWatcher()
+        csv = cfg_get("geral_multas_csv")
+        if os.path.exists(csv):
+            self.watcher.addPath(csv)
+        self.watcher.fileChanged.connect(self._csv_changed)
+
+    def _csv_changed(self, path):
+        if not os.path.exists(path):
+            QTimer.singleShot(500, lambda: self._readd_watch(path))
+            return
+        QTimer.singleShot(500, self.reload_geral)
+
+    def _readd_watch(self, path):
+        if os.path.exists(path):
+            self.watcher.addPath(path)
+        self.reload_geral()
+
+    def reload_geral(self):
+        self.view_geral.recarregar()
+
+    def conferir_fluig(self):
+        try:
+            detalhamento_path = cfg_get("detalhamento_path")
+            df_det = pd.read_excel(detalhamento_path, dtype=str).fillna("")
+            if df_det.empty or len(df_det.columns)<2:
+                QMessageBox.warning(self,"Aviso","Planilha inválida."); return
+            status_col = next((c for c in df_det.columns if c.strip().lower()=="status"), df_det.columns[1])
+            mask_aberta = df_det[status_col].astype(str).str.strip().str.lower().eq("aberta")
+            df_open = df_det[mask_aberta].copy()
+            if "Nº Fluig" in df_open.columns:
+                fcol = "Nº Fluig"
+            else:
+                fcol = next((c for c in df_open.columns if "fluig" in c.lower()), None)
+            if not fcol:
+                QMessageBox.warning(self,"Aviso","Coluna de Fluig não encontrada."); return
+            df_csv = ensure_status_cols(pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna(""), csv_path=cfg_get("geral_multas_csv"))
+            fluig_det = set(df_open[fcol].astype(str).str.strip())
+            fluig_csv = set(df_csv["FLUIG"].astype(str).str.strip()) if "FLUIG" in df_csv.columns else set()
+            no_csv_codes = sorted([c for c in fluig_det if c and c not in fluig_csv])
+            no_det_codes = sorted([c for c in fluig_csv if c and c not in fluig_det])
+            left_cols = [fcol] + [c for c in ["Placa","Nome","AIT","Data Limite","Data Infração","Status"] if c in df_open.columns]
+            df_left = df_open[df_open[fcol].astype(str).str.strip().isin(no_csv_codes)][left_cols].copy()
+            df_left.rename(columns={fcol:"Nº Fluig"}, inplace=True)
+            right_cols = [c for c in ["FLUIG","PLACA","INFRATOR","NOTIFICACAO","ANO","MES"] if c in df_csv.columns]
+            df_right = df_csv[df_csv["FLUIG"].astype(str).str.strip().isin(no_det_codes)][right_cols].copy()
+            dlg = ConferirFluigDialog(self, df_left, df_right)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self,"Erro",str(e))
+
+    def inserir(self, prefill_fluig=None):
+        dlg = InserirDialog(self, prefill_fluig)
+        dlg.exec()
+        self.reload_geral()
+
+    def editar(self):
+        dlg = EditarDialog(self)
+        dlg.exec()
+        self.reload_geral()
+
+    def editar_with_key(self, key):
+        dlg = EditarDialog(self)
+        dlg.le_key.setText(str(key))
+        dlg.load_record()
+        dlg.exec()
+        self.reload_geral()
+
+    def excluir(self):
+        dlg = ExcluirDialog(self)
+        dlg.exec()
+        self.reload_geral()
+
+    def fase_pastores(self):
+        try:
+            path = cfg_get("pastores_file")
+            if not path or not os.path.exists(path):
+                QMessageBox.warning(self,"Aviso","Planilha Fase Pastores não configurada na aba Base.")
+                return
+            dfp = pd.read_excel(path, dtype=str).fillna("")
+            fcol = next((c for c in dfp.columns if "fluig" in c.lower()), None)
+            dcol = next((c for c in dfp.columns if "data" in c.lower() and "pastor" in c.lower()), None)
+            tcol = next((c for c in dfp.columns if "tipo" in c.lower()), None)
+            if not fcol or not dcol or not tcol:
+                QMessageBox.warning(self,"Aviso","Colunas inválidas em Fase Pastores.")
+                return
+            df = ensure_status_cols(pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna(""), csv_path=None)
+            idx = {str(f).strip(): i for i,f in enumerate(df.get("FLUIG", pd.Series([], dtype=str)).astype(str))}
+            changed = False
+            for _, r in dfp.iterrows():
+                f = str(r[fcol]).strip()
+                tipo = str(r[tcol]).upper()
+                data = str(r[dcol]).strip()
+                if not f or f not in idx:
+                    continue
+                if "PASTOR" not in tipo or not data:
+                    continue
+                qd = _parse_dt_any(data)
+                if not qd.isValid():
+                    continue
+                i = idx[f]
+                df.at[i, "SGU"] = qd.toString(DATE_FORMAT)
+                df.at[i, "SGU_STATUS"] = "Pago"
+                changed = True
+            if changed:
+                df.to_csv(cfg_get("geral_multas_csv"), index=False)
+                QMessageBox.information(self,"Sucesso","Atualizado.")
+            else:
+                QMessageBox.information(self,"Sucesso","Nada para atualizar.")
+        except Exception as e:
+            QMessageBox.critical(self,"Erro",str(e))
+        self.reload_geral()

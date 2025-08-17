@@ -1,0 +1,10 @@
+{
+  "geral_multas_csv": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\GERAL_MULTAS.csv",
+  "multas_root": "T:\\Veiculos\\VEÍCULOS - RN\\MULTAS",
+  "detalhamento_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\Notificações de Multas - Detalhamento.xlsx",
+  "pastores_file": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\Notificações de Multas - Fase Pastores.xlsx",
+  "pastores_dir": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS",
+  "extrato_geral_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\ExtratoGeral.xlsx",
+  "extrato_simplificado_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\ExtratoSimplificado.xlsx",
+  "users_file": "users.csv"
+}

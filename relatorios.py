@@ -1,55 +1,11 @@
 import os, re
 import pandas as pd
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget as QW, QGridLayout, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QComboBox, QSizePolicy
-from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFontMetrics
-from utils import ensure_status_cols, apply_shadow, _paint_status
+from utils import ensure_status_cols, apply_shadow, _paint_status, CheckableComboBox, SummaryDialog
 from constants import DATE_COLS
-from dialogs import SummaryDialog
 from config import cfg_get
-
-class CheckableComboBox(QComboBox):
-    changed = pyqtSignal()
-    def __init__(self, values):
-        super().__init__()
-        self.set_values(values)
-        self.view().pressed.connect(self._toggle)
-        self._update_text()
-    def set_values(self, values):
-        self.blockSignals(True)
-        self.clear()
-        vals = sorted({str(v) for v in values if str(v).strip()})
-        if not vals:
-            self.addItem("(vazio)")
-            idx = self.model().index(0, 0)
-            self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
-        else:
-            for i, v in enumerate(vals):
-                self.addItem(v)
-                idx = self.model().index(i, 0)
-                self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
-        self.blockSignals(False)
-        self._update_text()
-    def _toggle(self, index):
-        st = self.model().data(index, Qt.ItemDataRole.CheckStateRole)
-        ns = Qt.CheckState.Unchecked if st == Qt.CheckState.Checked else Qt.CheckState.Checked
-        self.model().setData(index, ns, Qt.ItemDataRole.CheckStateRole)
-        self._update_text()
-        self.changed.emit()
-    def selected_values(self):
-        out = []
-        for i in range(self.count()):
-            idx = self.model().index(i, 0)
-            st = self.model().data(idx, Qt.ItemDataRole.CheckStateRole)
-            if st == Qt.CheckState.Checked:
-                out.append(self.itemText(i))
-        return out
-    def _update_text(self):
-        n = len(self.selected_values())
-        self.setEditable(True)
-        self.lineEdit().setReadOnly(True)
-        self.lineEdit().setText("Todos" if n == 0 else f"{n} selecionados")
-        self.setEditable(False)
 
 class RelatorioWindow(QWidget):
     def __init__(self, caminho_arquivo):
@@ -64,26 +20,19 @@ class RelatorioWindow(QWidget):
         self.mode_filtros = {}
         self.multi_filtros = {}
         self.text_filtros = {}
+
         root = QVBoxLayout(self)
         header_card = QFrame(); header_card.setObjectName("card"); apply_shadow(header_card, radius=18)
         top = QVBoxLayout(header_card)
         actions = QHBoxLayout()
-        btn_recarregar = QPushButton("Recarregar")
-        btn_recarregar.clicked.connect(self.recarregar)
-        btn_visao = QPushButton("Visão Geral")
-        btn_visao.clicked.connect(self.mostrar_visao)
-        btn_limpar = QPushButton("Limpar filtros")
-        btn_limpar.clicked.connect(self.limpar_filtros)
-        btn_export = QPushButton("Exportar Excel")
-        btn_export.clicked.connect(self.exportar_excel)
-        actions.addWidget(btn_recarregar)
-        actions.addWidget(btn_visao)
-        actions.addWidget(btn_limpar)
-        actions.addStretch(1)
-        actions.addWidget(btn_export)
+        btn_recarregar = QPushButton("Recarregar"); btn_recarregar.clicked.connect(self.recarregar)
+        btn_visao = QPushButton("Visão Geral"); btn_visao.clicked.connect(self.mostrar_visao)
+        btn_limpar = QPushButton("Limpar filtros"); btn_limpar.clicked.connect(self.limpar_filtros)
+        btn_export = QPushButton("Exportar Excel"); btn_export.clicked.connect(self.exportar_excel)
+        actions.addWidget(btn_recarregar); actions.addWidget(btn_visao); actions.addWidget(btn_limpar); actions.addStretch(1); actions.addWidget(btn_export)
         top.addLayout(actions)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
+
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
         self.filters_host = QW()
         self.filters_grid = QGridLayout(self.filters_host)
         self.filters_grid.setContentsMargins(12,12,12,12)
@@ -92,9 +41,8 @@ class RelatorioWindow(QWidget):
         self.scroll.setWidget(self.filters_host)
         top.addWidget(self.scroll)
         root.addWidget(header_card)
-        table_card = QFrame()
-        table_card.setObjectName("glass")
-        apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
+
+        table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
         tv = QVBoxLayout(table_card)
         self.tabela = QTableWidget()
         self.tabela.setAlternatingRowColors(True)
@@ -104,10 +52,12 @@ class RelatorioWindow(QWidget):
         self.tabela.horizontalHeader().setSortIndicatorShown(True)
         tv.addWidget(self.tabela)
         root.addWidget(table_card)
+
         self.watcher = QFileSystemWatcher()
         if os.path.exists(self.path):
             self.watcher.addPath(self.path)
         self.watcher.fileChanged.connect(self._file_changed)
+
         self.carregar_dados(self.path)
         self.showMaximized()
 
@@ -132,9 +82,7 @@ class RelatorioWindow(QWidget):
         self.preencher_tabela(self.df_filtrado)
 
     def _add_text_row(self, col, where):
-        le = QLineEdit()
-        le.setPlaceholderText(f"Filtrar {col}...")
-        le.setMaximumWidth(self.max_pix)
+        le = QLineEdit(); le.setPlaceholderText(f"Filtrar {col}..."); le.setMaximumWidth(self.max_pix)
         le.textChanged.connect(self.atualizar_filtro)
         self.text_filtros[col].append(le)
         where.addWidget(le)
@@ -148,39 +96,36 @@ class RelatorioWindow(QWidget):
         self.mode_filtros.clear()
         self.multi_filtros.clear()
         self.text_filtros.clear()
+
         cols = list(self.df_original.columns)
         for i, coluna in enumerate(cols):
             wrap = QFrame()
             v = QVBoxLayout(wrap)
-            label = QLabel(coluna)
-            label.setObjectName("colTitle")
-            label.setWordWrap(True)
-            label.setMaximumWidth(self.max_pix)
+            label = QLabel(coluna); label.setObjectName("colTitle"); label.setWordWrap(True); label.setMaximumWidth(self.max_pix)
+
             line1 = QHBoxLayout()
-            mode = QComboBox()
-            mode.addItems(["Todos","Excluir vazios","Somente vazios"])
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
             ms = CheckableComboBox(self.df_original[coluna].dropna().astype(str).unique())
             mode.currentTextChanged.connect(self.atualizar_filtro)
             ms.changed.connect(self.atualizar_filtro)
-            line1.addWidget(mode)
-            line1.addWidget(ms)
-            v.addWidget(label)
-            v.addLayout(line1)
+            line1.addWidget(mode); line1.addWidget(ms)
+
+            v.addWidget(label); v.addLayout(line1)
+
             line2 = QVBoxLayout()
-            btn_plus = QPushButton("+")
-            btn_plus.setFixedWidth(28)
-            row = QHBoxLayout()
-            row.addLayout(line2, 1)
-            row.addWidget(btn_plus)
+            btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28)
+            row = QHBoxLayout(); row.addLayout(line2, 1); row.addWidget(btn_plus)
             v.addLayout(row)
+
             self.mode_filtros[coluna] = mode
             self.multi_filtros[coluna] = ms
             self.text_filtros[coluna] = []
             self._add_text_row(coluna, line2)
             btn_plus.clicked.connect(lambda _, c=coluna, l=line2: self._add_text_row(c, l))
+
             self.filters_grid.addWidget(wrap, i//3, i%3)
-        spacer = QFrame()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        spacer = QFrame(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.filters_grid.addWidget(spacer, (len(cols)+2)//3, 0, 1, 3)
 
     def mostrar_visao(self):

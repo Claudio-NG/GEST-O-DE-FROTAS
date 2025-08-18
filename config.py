@@ -9,6 +9,8 @@ DEFAULTS = {
     "multas_root": r"T:\Veiculos\VEÍCULOS - RN\MULTAS",
     "detalhamento_path": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\Notificações de Multas - Detalhamento.xlsx",
     "pastores_file": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\Notificações de Multas - Fase Pastores.xlsx",
+    # NOVO: caminho da planilha 3
+    "condutor_identificado_path": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\Notificações de Multas - Condutor Identificado.xlsx",
     "pastores_dir": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS",
     "extrato_geral_path": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoGeral.xlsx",
     "extrato_simplificado_path": r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoSimplificado.xlsx",

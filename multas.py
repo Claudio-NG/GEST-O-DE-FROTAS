@@ -201,35 +201,86 @@ class EditarDialog(QDialog):
         btn_close.clicked.connect(self.reject)
 
     def load_record(self):
+        # 1) Pega a chave (FLUIG) digitada
         key = self.le_key.text().strip()
-        if not key: return
+        if not key:
+            return
+
+        # 2) Recarrega o CSV do caminho configurado na aba Base
         csv = cfg_get("geral_multas_csv")
         self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
+        # Garante que exista a coluna de comentários
         if "COMENTARIO" not in self.df.columns:
             self.df["COMENTARIO"] = ""
-        rows = self.df.index[self.df["FLUIG"].astype(str)==key].tolist()
+
+        # 3) Procura a linha do FLUIG
+        rows = self.df.index[self.df.get("FLUIG", pd.Series([], dtype=str)).astype(str) == key].tolist()
         if not rows:
-            QMessageBox.warning(self,"Aviso","FLUIG não encontrado"); return
+            QMessageBox.warning(self, "Aviso", "FLUIG não encontrado")
+            return
         i = rows[0]
-        for c in [col for col in self.df.columns if not c.endswith("_STATUS")]:
-            if c in self.widgets: continue
-            if c in DATE_COLS:
-                from PyQt6.QtWidgets import QDateEdit
-                d = QDateEdit(); d.setCalendarPopup(True); d.setDisplayFormat(DATE_FORMAT)
-                d.setMinimumDate(QDate(1752,9,14)); d.setSpecialValueText("")
-                qd = to_qdate_flexible(self.df.at[i,c])
+
+        # 4) (Opcional) Limpa o formulário se já tinha widgets de carregamentos anteriores
+        #    — comente as 5 linhas abaixo se você prefere manter os campos reaproveitados
+        while self.form.count():
+            item = self.form.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self.widgets.clear()
+
+        # 5) Lista de colunas SEM os sufixos *_STATUS (montada fora do loop!)
+        cols_sem_status = [col for col in self.df.columns if not str(col).endswith("_STATUS")]
+
+        # 6) Cria widgets para cada coluna
+        for col in cols_sem_status:
+            if col in self.widgets:
+                continue
+
+            # Datas: campo QDateEdit + combo de STATUS lado a lado
+            if col in DATE_COLS:
+                d = QDateEdit()
+                d.setCalendarPopup(True)
+                d.setDisplayFormat(DATE_FORMAT)
+                d.setMinimumDate(QDate(1752, 9, 14))
+                d.setSpecialValueText("")
+
+                qd = to_qdate_flexible(self.df.at[i, col])
                 d.setDate(qd if qd.isValid() else d.minimumDate())
-                s = QComboBox(); s.addItems(["","Pendente","Pago","Vencido"])
-                s.setCurrentText(self.df.at[i, f"{c}_STATUS"] if f"{c}_STATUS" in self.df.columns else "")
-                box = QWidget(); hb = QHBoxLayout(box); hb.setContentsMargins(0,0,0,0); hb.addWidget(d); hb.addWidget(s)
-                self.form.addRow(c,box); self.widgets[c]=(d,s)
-            elif c=="ORGÃO":
-                cb=QComboBox(); cb.addItems(ORGAOS); cb.setCurrentText(self.df.at[i,c])
-                self.form.addRow(c,cb); self.widgets[c]=cb
+
+                s = QComboBox()
+                s.addItems(["", "Pendente", "Pago", "Vencido"])  # STATUS_OPS
+                s.setCurrentText(self.df.at[i, f"{col}_STATUS"] if f"{col}_STATUS" in self.df.columns else "")
+
+                box = QWidget()
+                hb = QHBoxLayout(box)
+                hb.setContentsMargins(0, 0, 0, 0)
+                hb.addWidget(d)
+                hb.addWidget(s)
+
+                self.form.addRow(col, box)
+                self.widgets[col] = (d, s)
+
+            # Campo com domínio fixo
+            elif col == "ORGÃO":
+                cb = QComboBox()
+                cb.addItems(ORGAOS)
+                cb.setCurrentText(self.df.at[i, col])
+                self.form.addRow(col, cb)
+                self.widgets[col] = cb
+
+            # Demais campos: QLineEdit
             else:
-                w=QLineEdit(self.df.at[i,c]); self.form.addRow(c,w); self.widgets[c]=w
+                w = QLineEdit(str(self.df.at[i, col]))
+                self.form.addRow(col, w)
+                self.widgets[col] = w
+
+        # 7) Guarda o índice atual para o save_record
         self.current_index = i
 
+
+
+    
     def save_record(self):
         if not hasattr(self, "current_index"): return
         i = self.current_index

@@ -14,6 +14,13 @@ from utils import (
 from constants import ORGAOS, DATE_COLS, DATE_FORMAT
 from config import cfg_get
 
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QTabWidget, QVBoxLayout, QFrame, QHBoxLayout,
+    QLabel, QPushButton, QGridLayout, QLineEdit, QComboBox, QMessageBox,
+    QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDateEdit, QScrollArea
+)
+from utils import apply_shadow, CheckableComboBox
+
 class InserirDialog(QDialog):
     def __init__(self, parent, prefill_fluig=None):
         super().__init__(parent)

@@ -7,6 +7,13 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QPushButt
 from constants import PORTUGUESE_MONTHS
 from utils import apply_shadow
 
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
+)
+from utils import apply_shadow, CheckableComboBox
+
+
 class CombustivelWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -376,18 +383,45 @@ def _dt_parse_any(s):
             pass
     return pd.to_datetime(s, dayfirst=True, errors="coerce")
 
+
+
 def _num_from_text(s):
-    if pd.isna(s): 
+    """
+    Suporta formatos BR e US:
+    - "R$ 1.234,56" -> 1234.56
+    - "6,590" -> 6.59
+    - "1,234.56" -> 1234.56
+    """
+    if s is None:
         return 0.0
-    txt = str(s)
-    # tira "R$" e qualquer coisa que não seja dígito, vírgula, ponto, sinal
-    txt = re.sub(r"[^\d,.-]", "", txt)
-    # padrão BR -> decimal com vírgula
-    txt = txt.replace(".", "").replace(",", ".")
+    txt = str(s).strip()
+    if not txt:
+        return 0.0
+    import re
+    txt = re.sub(r"[^\d.,-]", "", txt)
+
+    if ("," not in txt) and ("." not in txt):
+        try:
+            return float(txt)
+        except:
+            return 0.0
+
+    if "," in txt and "." in txt:
+        last_comma = txt.rfind(",")
+        last_dot = txt.rfind(".")
+        if last_comma > last_dot:
+            txt = txt.replace(".", "").replace(",", ".")
+        else:
+            txt = txt.replace(",", "")
+    else:
+        if "," in txt:
+            txt = txt.replace(",", ".")
     try:
         return float(txt)
     except:
         return 0.0
+
+
 
 class CombustivelDetalhadoWindow(QWidget):
     """
@@ -501,11 +535,11 @@ class CombustivelDetalhadoWindow(QWidget):
         self._dmin = min(dates) if dates else pd.Timestamp.today().normalize()
         self._dmax = max(dates) if dates else pd.Timestamp.today().normalize()
 
-    # ------- UI
+
     def _build_ui(self):
         root = QVBoxLayout(self)
 
-        # Título
+    
         title = QFrame(); title.setObjectName("glass"); apply_shadow(title, radius=18, blur=60, color=QColor(0,0,0,60))
         tv = QVBoxLayout(title); tv.setContentsMargins(18,18,18,18)
         h = QLabel("Combustível — Visão Detalhada"); h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -550,7 +584,33 @@ class CombustivelDetalhadoWindow(QWidget):
         tl.addLayout(r1); tl.addLayout(r2)
         root.addWidget(top)
 
-        # Abas de cenários
+        # ===== Filtros por coluna (modelo igual às outras telas) =====
+        filt = QFrame(); filt.setObjectName("card"); apply_shadow(filt, radius=18)
+        fl = QVBoxLayout(filt); fl.setContentsMargins(12,12,12,12)
+        self.f_scroll = QScrollArea(); self.f_scroll.setWidgetResizable(True)
+        self.f_host = QWidget(); self.f_grid = QGridLayout(self.f_host)
+        self.f_grid.setHorizontalSpacing(14); self.f_grid.setVerticalSpacing(8)
+        self.f_scroll.setWidget(self.f_host); fl.addWidget(self.f_scroll)
+        root.addWidget(filt)
+
+        # campos filtráveis (por placa e atributos relevantes)
+        self.fcols = [
+            ("PLACA","Placa"),
+            ("MOTORISTA","Motorista"),
+            ("COMBUSTIVEL","Combustível"),
+            ("CIDADE_UF","Cidade/UF"),
+            ("ESTABELECIMENTO","Estabelecimento"),
+            ("RESPONSAVEL","Responsável"),
+            ("SERVICO","Serviço"),
+            ("PAGAMENTO","Pagamento"),
+            ("MODELO","Modelo"),
+            ("FAMILIA","Família"),
+            ("TIPO_FROTA","Tipo Frota"),
+        ]
+        self.f_mode = {}; self.f_ms = {}; self.f_texts = {}
+        self._mount_col_filters()
+
+        # Abas
         from PyQt6.QtWidgets import QTabWidget
         self.tabs = QTabWidget(); root.addWidget(self.tabs, 1)
 
@@ -610,11 +670,45 @@ class CombustivelDetalhadoWindow(QWidget):
         vr.addWidget(self.tbl_resp)
         self.tabs.addTab(self.tab_resp, "RESPONSÁVEL")
 
-        # sinais dos filtros de tempo
+        # sinais de tempo
         self.de_ini.dateChanged.connect(self._dates_changed)
         self.de_fim.dateChanged.connect(self._dates_changed)
         self.sl_ini.valueChanged.connect(self._sliders_changed)
         self.sl_fim.valueChanged.connect(self._sliders_changed)
+
+    def _mount_col_filters(self):
+        while self.f_grid.count():
+            item = self.f_grid.takeAt(0)
+            w = item.widget()
+            if w: w.setParent(None)
+
+        for i, (col, label) in enumerate(self.fcols):
+            box = QFrame(); vb = QVBoxLayout(box)
+            vb.addWidget(QLabel(label))
+            h1 = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
+            ms = CheckableComboBox(self.df_base.get(col, pd.Series([], dtype=str)).astype(str).dropna().unique())
+            mode.currentTextChanged.connect(self._apply_filters_and_refresh)
+            ms.changed.connect(self._apply_filters_and_refresh)
+            h1.addWidget(mode); h1.addWidget(ms)
+            vb.addLayout(h1)
+
+            h2 = QHBoxLayout()
+            le = QLineEdit(); le.setPlaceholderText(f"Filtrar {label}..."); le.textChanged.connect(self._apply_filters_and_refresh)
+            add = QPushButton("+"); add.setFixedWidth(28)
+            h2.addWidget(le); h2.addWidget(add); vb.addLayout(h2)
+
+            def _add_more(_=None, col_=col, vb_=vb):
+                le2 = QLineEdit(); le2.setPlaceholderText(f"Filtrar {label}..."); le2.textChanged.connect(self._apply_filters_and_refresh)
+                vb_.addWidget(le2)
+                self.f_texts[col_].append(le2)
+            add.clicked.connect(_add_more)
+
+            self.f_grid.addWidget(box, i//3, i%3)
+            self.f_mode[col] = mode
+            self.f_ms[col] = ms
+            self.f_texts[col] = [le]
+
 
     def _prep(self, tbl, headers):
         tbl.setAlternatingRowColors(True)
@@ -653,15 +747,52 @@ class CombustivelDetalhadoWindow(QWidget):
         self.sl_ini.blockSignals(False); self.sl_fim.blockSignals(False)
         self._apply_filters_and_refresh()
 
-    # ------- refresh
+
     def _apply_filters_and_refresh(self):
         q0, q1 = self.de_ini.date(), self.de_fim.date()
         t0 = pd.Timestamp(q0.year(), q0.month(), q0.day())
         t1 = pd.Timestamp(q1.year(), q1.month(), q1.day())
         a, b = (t0, t1) if t0 <= t1 else (t1, t0)
+
         df = self.df_base.copy()
         mask = (df["DT"].notna()) & (df["DT"] >= a) & (df["DT"] <= b)
-        self.df_f = df[mask].reset_index(drop=True)
+        df = df[mask].reset_index(drop=True)
+
+        # Filtros por coluna
+        for col, _label in self.fcols:
+            if col not in df.columns: 
+                continue
+            mode = self.f_mode[col].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[col].astype(str).str.strip()!=""]
+            elif mode == "Somente vazios":
+                df = df[df[col].astype(str).str.strip()==""]
+
+            sels = [s for s in self.f_ms[col].selected_values() if s]
+            if sels:
+                df = df[df[col].astype(str).isin(sels)]
+
+            termos = [le.text().strip().lower() for le in self.f_texts[col] if le.text().strip()]
+            if termos:
+                s = df[col].astype(str).str.lower()
+                import re as _re
+                rgx = "|".join(map(_re.escape, termos))
+                df = df[s.str.contains(rgx, na=False)]
+
+        for col, _label in self.fcols:
+            ms = self.f_ms[col]
+            if col not in df.columns:
+                continue
+            current_sel = ms.selected_values()
+            ms.set_values(sorted([x for x in df[col].astype(str).dropna().unique() if x]))
+            if current_sel:
+                for i in range(ms.count()):
+                    if ms.itemText(i) in current_sel:
+                        idx = ms.model().index(i, 0)
+                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+                ms._update_text()
+
+        self.df_f = df
 
         # KPIs
         self.kpi_abast.setText(str(len(self.df_f)))
@@ -674,7 +805,7 @@ class CombustivelDetalhadoWindow(QWidget):
         self.cb_placa.blockSignals(True); self.cb_placa.clear(); self.cb_placa.addItems(placas); self.cb_placa.blockSignals(False)
         self.cb_motor.blockSignals(True); self.cb_motor.clear(); self.cb_motor.addItems(motors); self.cb_motor.blockSignals(False)
 
-        # cenários
+        # cenários (mesmos métodos que você já tem)
         self._refresh_geral()
         self._refresh_data()
         self._refresh_placa()
@@ -683,6 +814,10 @@ class CombustivelDetalhadoWindow(QWidget):
         self._refresh_cidade()
         self._refresh_estab()
         self._refresh_resp()
+
+
+
+
 
     def _fill(self, tbl, rows):
         tbl.setRowCount(len(rows))

@@ -23,6 +23,7 @@ from constants import MODULES, DATE_FORMAT
 from multas import InfraMultasWindow
 from relatorios import RelatorioWindow
 from base import BaseWindow
+<<<<<<< HEAD
 from config import cfg_get
 <<<<<<< HEAD
 from PyQt6.QtWidgets import QDialog
@@ -89,6 +90,15 @@ from PyQt6.QtWidgets import (
 from utils import apply_shadow, CheckableComboBox
 
 >>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
+=======
+from combustivel import CombustivelWindow
+from auth import LoginWindow
+from config import cfg_get
+
+# ==========================
+# Helpers internos do dashboard
+# ==========================
+>>>>>>> parent of f7f355c (ATUALIZAÇÃO DE COMBUSTÍVEL)
 def _parse_dt(val):
     s = str(val).strip()
     if not s:
@@ -765,18 +775,15 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(w, title)
         self.tab_widget.setCurrentWidget(w)
 
-
     def open_module(self, module):
         for idx in range(self.tab_widget.count()):
             if self.tab_widget.tabText(idx)==module:
                 self.tab_widget.setCurrentIndex(idx); return
-
         if module == "Infrações e Multas":
             w = MultasMenu(self.add_or_focus)
             self.tab_widget.addTab(w, "Infrações e Multas")
             self.tab_widget.setCurrentWidget(w)
             return
-
         if module == "Relatórios":
             file, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
             if not file:
@@ -785,11 +792,9 @@ class MainWindow(QMainWindow):
         elif module == "Base":
             w = BaseWindow()
         elif module == "Combustível":
-            # ⬇️ AQUI É A TROCA: antes chamava CombustivelWindow(); agora abre o MENU com 2 botões
-            w = CombustivelMenu(self.add_or_focus)
+            w = CombustivelWindow()
         else:
             w = QWidget(); v = QVBoxLayout(w); v.addWidget(QLabel(module))
-
         self.tab_widget.addTab(w, module)
         self.tab_widget.setCurrentWidget(w)
 

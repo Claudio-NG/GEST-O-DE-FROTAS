@@ -256,19 +256,27 @@ class EditarDialog(QDialog):
 
     def load_record(self):
         key = self.le_key.text().strip()
+<<<<<<< HEAD
         if not key:
             return
 
+=======
+        if not key: return
+>>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         csv = cfg_get("geral_multas_csv")
         self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
         if "COMENTARIO" not in self.df.columns:
             self.df["COMENTARIO"] = ""
+<<<<<<< HEAD
 
         rows = self.df.index[self.df.get("FLUIG", pd.Series([], dtype=str)).astype(str) == key].tolist()
+=======
+        rows = self.df.index[self.df["FLUIG"].astype(str)==key].tolist()
+>>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         if not rows:
-            QMessageBox.warning(self, "Aviso", "FLUIG não encontrado")
-            return
+            QMessageBox.warning(self,"Aviso","FLUIG não encontrado"); return
         i = rows[0]
+<<<<<<< HEAD
 
         # limpar form anterior
         while self.form.count():
@@ -306,6 +314,25 @@ class EditarDialog(QDialog):
                 self.form.addRow(col, w)
                 self.widgets[col] = w
 
+=======
+        for c in [col for col in self.df.columns if not c.endswith("_STATUS")]:
+            if c in self.widgets: continue
+            if c in DATE_COLS:
+                from PyQt6.QtWidgets import QDateEdit
+                d = QDateEdit(); d.setCalendarPopup(True); d.setDisplayFormat(DATE_FORMAT)
+                d.setMinimumDate(QDate(1752,9,14)); d.setSpecialValueText("")
+                qd = to_qdate_flexible(self.df.at[i,c])
+                d.setDate(qd if qd.isValid() else d.minimumDate())
+                s = QComboBox(); s.addItems(["","Pendente","Pago","Vencido"])
+                s.setCurrentText(self.df.at[i, f"{c}_STATUS"] if f"{c}_STATUS" in self.df.columns else "")
+                box = QWidget(); hb = QHBoxLayout(box); hb.setContentsMargins(0,0,0,0); hb.addWidget(d); hb.addWidget(s)
+                self.form.addRow(c,box); self.widgets[c]=(d,s)
+            elif c=="ORGÃO":
+                cb=QComboBox(); cb.addItems(ORGAOS); cb.setCurrentText(self.df.at[i,c])
+                self.form.addRow(c,cb); self.widgets[c]=cb
+            else:
+                w=QLineEdit(self.df.at[i,c]); self.form.addRow(c,w); self.widgets[c]=w
+>>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         self.current_index = i
 
     def save_record(self):

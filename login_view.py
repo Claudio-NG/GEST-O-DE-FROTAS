@@ -1,5 +1,8 @@
-from PyQt6.QtWidgets import (QDialog, QLineEdit, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFormLayout, QAction)
-from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
+    QDialog, QLineEdit, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QFormLayout
+)
+from PyQt6.QtGui import QIcon, QAction   # QAction vem do QtGui
 from PyQt6.QtCore import Qt
 
 class LoginView(QDialog):

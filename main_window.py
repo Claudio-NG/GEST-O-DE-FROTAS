@@ -1,5 +1,3 @@
-# main_window.py
-
 import os
 import re
 import pandas as pd
@@ -12,20 +10,17 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QFont, QColor
-
-# Projeto
 from utils import apply_shadow, CheckableComboBox, ensure_status_cols
 from constants import MODULES, DATE_FORMAT, DATE_COLS, STATUS_COLOR
 from multas import InfraMultasWindow
 from relatorios import RelatorioWindow
 from base import BaseWindow
-from auth import LoginWindow
 from config import cfg_get
-from combustivel import CombustivelMenu  # Menu de combustível (seu módulo atual)
+from PyQt6.QtWidgets import QDialog
+from login_view import LoginView
+from auth import AuthService
+from combustivel import CombustivelMenu  
 
-# =========================================================
-# Diálogo de Alertas (datas com status Pendente/Vencido)
-# =========================================================
 class _AlertasDialog(QDialog):
     def __init__(self, parent, linhas):
         super().__init__(parent)
@@ -894,6 +889,20 @@ class MainWindow(QMainWindow):
 
 
     def logout(self):
+        # Esconde a janela atual e reabre a tela de login (modal)
+        self.hide()
+        auth = AuthService()  # usa o caminho do users_file do config/constants
+        dlg = LoginView(auth_service=auth)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # se você usa permissões, recupere antes de abrir de novo
+            # por exemplo, lendo do CSV e chamando parse_permissions
+            from utils import parse_permissions
+            import pandas as pd
+            users = pd.read_csv(cfg_get("users_file"), dtype=str)
+            row = users[users["email"].str.lower() == getattr(auth, "current_user", "").lower()]
+            perms = parse_permissions(row.iloc[0]["permissions"]) if not row.empty else "todos"
+
+            nova = MainWindow(perms if perms != "todos" else "todos")
+            nova.show()
         self.close()
-        self.login = LoginWindow()
-        self.login.show()
+

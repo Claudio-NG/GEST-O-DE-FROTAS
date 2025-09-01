@@ -892,7 +892,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Erro", str(e))
 
-    # --------- sessão ----------
+
     def logout(self):
         self.close()
         self.login = LoginWindow()

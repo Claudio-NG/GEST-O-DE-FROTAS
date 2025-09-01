@@ -1,7 +1,12 @@
+# main.py
 import sys
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtCore import Qt
+
 from utils import ensure_base_csv
-from main_window import LoginWindow
+from auth import AuthService              # serviço de autenticação (ex.: ler users.csv, hash, etc.)
+from login_view import LoginView          # QDialog de login (UI)
+from main_window import MainWindow        # sua janela principal
 
 STYLE = """
 QWidget { background: #FFFFFF; color: #0B2A4A; font-size: 14px; }
@@ -28,12 +33,29 @@ QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 """
 
 def main():
+    # 1) garantir estruturas/arquivos-base (conforme seu utilitário)
     ensure_base_csv()
+
+    # 2) criar app e aplicar estilo
     app = QApplication(sys.argv)
+    app.setApplicationName("GESTÃO DE FROTAS")
+    app.setOrganizationName("Claudio NG")
+    # Em Qt6 o High DPI já vem melhor; estas flags ajudam em alguns monitores:
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     app.setStyleSheet(STYLE)
-    login = LoginWindow()
-    login.show()
-    sys.exit(app.exec())
+
+ 
+    auth = AuthService(users_path="users.csv")  # ajuste o caminho se necessário
+    login_dlg = LoginView(auth_service=auth)    # sua classe deve aceitar o serviço via argumento
+    result = login_dlg.exec()
+
+    if result == QDialog.DialogCode.Accepted:
+        win = MainWindow()
+        win.show()
+        sys.exit(app.exec())
+    else:
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

@@ -350,9 +350,7 @@ class CombustivelWindow(QWidget):
             card["main"].setText(self._fmt_brl(main_val))
             card["sub"].setText("TOTAL: " + self._fmt_brl(total_val))
             self._fit_font(card["main"])
-# ==========================
-# VISÃO DETALHADA DE COMBUSTÍVEL (mini-BI)
-# ==========================
+
 import re
 import pandas as pd
 from PyQt6.QtCore import Qt, QDate

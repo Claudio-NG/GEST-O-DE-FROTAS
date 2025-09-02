@@ -242,7 +242,9 @@ def gerar_geral_multas_csv(root=MULTAS_ROOT, output=GERAL_MULTAS_CSV):
 
 def ensure_base_csv():
     if not os.path.exists(GERAL_MULTAS_CSV):
-        os.makedirs(os.path.dirname(GERAL_MULTAS_CSV), exist_ok=True)
+        dir_path = os.path.dirname(GERAL_MULTAS_CSV)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         gerar_geral_multas_csv()
 
 # =============================================================================

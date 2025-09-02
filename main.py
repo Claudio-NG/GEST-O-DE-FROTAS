@@ -7,12 +7,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QFileDialog, QMessageBox
 )
 
-# Config & helpers do seu projeto
 from config import cfg_get, cfg_set, cfg_all
 from utils import ensure_status_cols, _parse_dt_any, apply_shadow
 from constants import DATE_COLS
 
-# Telas/módulos que você já enviou
 from auth import AuthService           # (arquivo do usuário)
 from login_view import LoginView       # (arquivo do usuário)
 from base import BaseWindow            # (arquivo do usuário)

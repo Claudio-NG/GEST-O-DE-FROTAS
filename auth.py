@@ -6,6 +6,45 @@ from typing import Tuple
 from config import cfg_get
 from constants import USERS_FILE as USERS_FILE_DEFAULT
 
+import os, json
+
+REMEMBER_FILE = "remember.json"
+
+class AuthService:
+    def __init__(self):
+        self.current_user = None
+        # tenta carregar lembrado
+        if os.path.exists(REMEMBER_FILE):
+            try:
+                with open(REMEMBER_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self._remembered = data.get("user")
+            except:
+                self._remembered = None
+        else:
+            self._remembered = None
+
+    def get_remembered_user(self):
+        return self._remembered
+
+    def set_remember(self, user, remember):
+        if remember:
+            with open(REMEMBER_FILE, "w", encoding="utf-8") as f:
+                json.dump({"user": user}, f)
+            self._remembered = user
+        else:
+            if os.path.exists(REMEMBER_FILE):
+                os.remove(REMEMBER_FILE)
+            self._remembered = None
+
+    def login(self, user, pwd):
+        # sua lógica real de login
+        if not user or not pwd:
+            return False, "Usuário/senha inválidos"
+        self.current_user = user
+        return True, "OK"
+
+
 class AuthService:
     def __init__(self, users_path: str | None = None):
         self.users_path = users_path or cfg_get("users_file") or USERS_FILE_DEFAULT

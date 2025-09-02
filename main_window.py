@@ -1,86 +1,425 @@
-
 import os
 import re
 import pandas as pd
 
-import os, sys, re, pandas as pd
-
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QTabWidget, QVBoxLayout, QFrame, QHBoxLayout,
     QLabel, QPushButton, QGridLayout, QLineEdit, QComboBox, QMessageBox,
-    QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDateEdit
+    QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDateEdit, QScrollArea,
+    QDialog
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QFont, QColor
+
 from utils import apply_shadow, CheckableComboBox, ensure_status_cols
 from constants import MODULES, DATE_FORMAT, DATE_COLS, STATUS_COLOR
-from utils import apply_shadow
-from constants import MODULES, DATE_FORMAT
-
 from multas import InfraMultasWindow
 from relatorios import RelatorioWindow
 from base import BaseWindow
 from config import cfg_get
-from PyQt6.QtWidgets import QDialog
+
 from login_view import LoginView
 from auth import AuthService
-from combustivel import CombustivelMenu  
-
-class _AlertasDialog(QDialog):
-    def __init__(self, parent, linhas):
-        super().__init__(parent)
-        self.setWindowTitle("Alertas de Datas")
-        self.resize(960, 560)
-
-        v = QVBoxLayout(self)
-
-        card = QFrame()
-        card.setObjectName("glass")
-        apply_shadow(card, radius=18, blur=60, color=QColor(0, 0, 0, 60))
-        cv = QVBoxLayout(card)
-
-        t = QTableWidget()
-        t.setAlternatingRowColors(True)
-        t.setSortingEnabled(True)
-        t.horizontalHeader().setSortIndicatorShown(True)
-        t.setColumnCount(6)
-        t.setHorizontalHeaderLabels(["FLUIG", "INFRATOR", "PLACA", "ETAPA", "DATA", "STATUS"])
-        t.setRowCount(len(linhas))
-
-        def _paint_status(item, status):
-            if status and status in STATUS_COLOR:
-                bg = STATUS_COLOR[status]
-                item.setBackground(bg)
-                # Contraste do texto com base no YIQ
-                yiq = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000
-                item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
-
-        for r, row in enumerate(linhas):
-            for c, val in enumerate(row):
-                it = QTableWidgetItem("" if val is None else str(val))
-                if c == 5:  # STATUS
-                    _paint_status(it, val)
-                t.setItem(r, c, it)
-
-        t.resizeColumnsToContents()
-        t.resizeRowsToContents()
-
-        cv.addWidget(t)
-        v.addWidget(card)
-
-        close = QPushButton("Fechar")
-        close.clicked.connect(self.accept)
-        v.addWidget(close)
 
 from combustivel import CombustivelMenu, CombustivelWindow
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
-)
-from utils import apply_shadow, CheckableComboBox
-from combustivel import CombustivelWindow
-from auth import LoginWindow
-from config import cfg_get
+
+def _collect_alertas(df):
+    """
+    Monta as linhas (FLUIG, INFRATOR, PLACA, ETAPA, DATA, STATUS)
+    usando SOMENTE as colunas listadas em constants.DATE_COLS.
+    """
+    linhas = []
+    if df.empty:
+        return linhas
+    use_cols = [c for c in DATE_COLS if c in df.columns]  # garante só as 3
+    for _, row in df.iterrows():
+        fluig = str(row.get("FLUIG", "")).strip()
+        infr = str(row.get("INFRATOR", "") or row.get("NOME", "")).strip()
+        placa = str(row.get("PLACA", "")).strip()
+        for col in use_cols:
+            dt = str(row.get(col, "")).strip()
+            st = str(row.get(f"{col}_STATUS", "")).strip()
+            if dt or st:
+                linhas.append([fluig, infr, placa, col, dt, st])
+    return linhas
+
+
+class AlertsTab(QWidget):
+    """
+    Guia 'Alertas': tabela organizada com padrão de filtros do sistema.
+    - Filtro global único (com botão +) -> filtra em TODAS as colunas
+    - Por coluna: modo (Todos/Excluir vazios/Somente vazios) + multiseleção
+    - Linhas derivadas de DATE_COLS: (FLUIG, INFRATOR, PLACA, ETAPA, DATA, STATUS)
+    - STATUS colorido conforme constants.STATUS_COLOR
+    """
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("tab_alertas")
+        self.resize(1100, 700)
+
+        self.df_original = pd.DataFrame()
+        self.df_filtrado = pd.DataFrame()
+        self.mode_filtros = {}
+        self.multi_filtros = {}
+        self.global_boxes = []
+
+        root = QVBoxLayout(self)
+
+        # ----- Header (ações + filtros globais) -----
+        header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
+        hv = QVBoxLayout(header)
+
+        actions = QHBoxLayout()
+        btn_reload = QPushButton("Recarregar"); btn_reload.clicked.connect(self.recarregar)
+        btn_clear  = QPushButton("Limpar filtros"); btn_clear.clicked.connect(self.limpar_filtros)
+        btn_export = QPushButton("Exportar Excel"); btn_export.clicked.connect(self.exportar_excel)
+        actions.addWidget(btn_reload); actions.addWidget(btn_clear); actions.addStretch(1); actions.addWidget(btn_export)
+        hv.addLayout(actions)
+
+        # Filtro global com botão +
+        row_global = QHBoxLayout()
+        row_global.addWidget(QLabel("Filtro global:"))
+        def _add_box():
+            le = QLineEdit()
+            le.setPlaceholderText("Digite para filtrar em TODAS as colunas…")
+            le.textChanged.connect(self._apply_filters)
+            self.global_boxes.append(le)
+            row_global.addWidget(le, 1)
+        _add_box()
+        btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28); btn_plus.clicked.connect(_add_box)
+        row_global.addWidget(btn_plus)
+        hv.addLayout(row_global)
+
+        # Filtros por coluna (modo + multiseleção)
+        self.filters_scroll = QScrollArea(); self.filters_scroll.setWidgetResizable(True)
+        self.filters_host = QWidget(); self.filters_grid = QGridLayout(self.filters_host)
+        self.filters_grid.setContentsMargins(0,0,0,0); self.filters_grid.setHorizontalSpacing(12); self.filters_grid.setVerticalSpacing(8)
+        self.filters_scroll.setWidget(self.filters_host)
+        hv.addWidget(self.filters_scroll)
+
+        root.addWidget(header)
+
+        # ----- Tabela -----
+        table_card = QFrame(); table_card.setObjectName("glass")
+        apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
+        tv = QVBoxLayout(table_card)
+
+        self.tabela = QTableWidget()
+        self.tabela.setAlternatingRowColors(True)
+        self.tabela.setSortingEnabled(True)
+        self.tabela.horizontalHeader().setSortIndicatorShown(True)
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tabela.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tv.addWidget(self.tabela)
+
+        root.addWidget(table_card)
+
+        # Carregar dados inicialmente
+        self.recarregar()
+
+    # ===== dados =====
+    def _load_df(self):
+        path = cfg_get("geral_multas_csv")
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "Alertas", "Caminho do GERAL_MULTAS.csv não configurado.")
+            return pd.DataFrame()
+
+        base = ensure_status_cols(pd.read_csv(path, dtype=str).fillna(""), csv_path=path)
+        # Montar linhas (FLUIG, INFRATOR, PLACA, ETAPA, DATA, STATUS) só a partir de DATE_COLS
+        rows = []
+        use_cols = [c for c in DATE_COLS if c in base.columns]  # só 3 datas oficiais
+        for _, r in base.iterrows():
+            fluig = str(r.get("FLUIG", "")).strip()
+            infr  = str(r.get("INFRATOR", "") or r.get("NOME", "")).strip()
+            placa = str(r.get("PLACA", "")).strip()
+            for col in use_cols:
+                dt = str(r.get(col, "")).strip()
+                st = str(r.get(f"{col}_STATUS", "")).strip()
+                if dt or st:
+                    rows.append([fluig, infr, placa, col, dt, st])
+        return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ETAPA","DATA","STATUS"])
+
+    def recarregar(self):
+        self.df_original = self._load_df()
+        self.df_filtrado = self.df_original.copy()
+        self._montar_filtros()
+        self._fill_table(self.df_filtrado)
+
+    # ===== filtros =====
+    def _montar_filtros(self):
+        # limpar grid
+        while self.filters_grid.count():
+            item = self.filters_grid.takeAt(0)
+            w = item.widget()
+            if w: w.setParent(None)
+        self.mode_filtros.clear()
+        self.multi_filtros.clear()
+
+        cols = list(self.df_original.columns)
+        for i, col in enumerate(cols):
+            wrap = QFrame(); v = QVBoxLayout(wrap)
+            lab = QLabel(col); lab.setObjectName("colTitle"); v.addWidget(lab)
+
+            line = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
+            mode.currentTextChanged.connect(self._apply_filters)
+            ms = CheckableComboBox(self.df_original[col].dropna().astype(str).unique())
+            ms.changed.connect(self._apply_filters)
+            line.addWidget(mode); line.addWidget(ms)
+            v.addLayout(line)
+
+            self.mode_filtros[col] = mode
+            self.multi_filtros[col] = ms
+            self.filters_grid.addWidget(wrap, i//3, i%3)
+
+    def limpar_filtros(self):
+        for le in self.global_boxes:
+            le.blockSignals(True); le.clear(); le.blockSignals(False)
+        for mode in self.mode_filtros.values():
+            mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
+        for ms in self.multi_filtros.values():
+            vals = [ms.itemText(i) for i in range(ms.count())]
+            ms.set_values(vals)
+        self._apply_filters()
+
+    def _apply_filters(self):
+        from utils import df_apply_global_texts
+        df = self.df_original.copy()
+
+        # Global (todas as colunas) — suporta múltiplas caixas se clicar +
+        texts = [le.text() for le in self.global_boxes if le.text().strip()]
+        df = df_apply_global_texts(df, texts)
+
+        # Por coluna: modo + multiseleção
+        for col in df.columns:
+            mode = self.mode_filtros[col].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[col].astype(str).str.strip() != ""]
+            elif mode == "Somente vazios":
+                df = df[df[col].astype(str).str.strip() == ""]
+            sels = [s for s in self.multi_filtros[col].selected_values() if s]
+            if sels:
+                df = df[df[col].astype(str).isin(sels)]
+
+        self.df_filtrado = df
+        self._fill_table(self.df_filtrado)
+
+        # Atualizar opções dos combos com o recorte atual (mantendo seleção)
+        for col in self.df_filtrado.columns:
+            ms = self.multi_filtros[col]
+            current_sel = ms.selected_values()
+            ms.set_values(self.df_filtrado[col].dropna().astype(str).unique())
+            if current_sel:
+                for i in range(ms.count()):
+                    if ms.itemText(i) in current_sel:
+                        idx = ms.model().index(i, 0)
+                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+                ms._update_text()
+
+    # ===== tabela =====
+    def _fill_table(self, df):
+        headers = list(df.columns)
+        self.tabela.clear()
+        self.tabela.setColumnCount(len(headers))
+        self.tabela.setHorizontalHeaderLabels(headers)
+        self.tabela.setRowCount(len(df))
+
+        for i, (_, r) in enumerate(df.iterrows()):
+            for j, col in enumerate(headers):
+                val = "" if pd.isna(r[col]) else str(r[col])
+                it = QTableWidgetItem(val)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                # STATUS colorido
+                if col.upper() == "STATUS":
+                    st = val.strip()
+                    from constants import STATUS_COLOR
+                    if st in STATUS_COLOR:
+                        bg = STATUS_COLOR[st]
+                        it.setBackground(bg)
+                        yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114)/1000
+                        it.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
+                self.tabela.setItem(i, j, it)
+
+        self.tabela.resizeColumnsToContents()
+        self.tabela.horizontalHeader().setStretchLastSection(True)
+        self.tabela.resizeRowsToContents()
+
+    def exportar_excel(self):
+        try:
+            out = "alertas_filtrado.xlsx"
+            self.df_filtrado.to_excel(out, index=False)
+            QMessageBox.information(self, "Exportado", f"{out} criado.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", str(e))
+
+
+
+class _AlertasDialog(QDialog):
+    """
+    Dialog de Alertas com tabela organizada e o padrão de filtros:
+    - 1 campo de texto global (com botão +) que filtra em TODAS as colunas
+    - por coluna: modo (Todos/Excluir vazios/Somente vazios) + multiseleção
+    - cores de STATUS preservadas
+    """
+    def __init__(self, parent, df):
+        super().__init__(parent)
+        self.setWindowTitle("Alertas de Datas")
+        self.resize(1100, 640)
+
+        self.df_original = df.copy()
+        # Reduz às colunas de interesse do alerta
+        cols_fixas = ["FLUIG", "INFRATOR", "PLACA", "ETAPA", "DATA", "STATUS"]
+        if not set(cols_fixas).issubset(self.df_original.columns):
+            # Se vier a planilha bruta, montamos as linhas a partir de DATE_COLS
+            rows = []
+            use_cols = [c for c in DATE_COLS if c in self.df_original.columns]
+            for _, row in self.df_original.iterrows():
+                fluig = str(row.get("FLUIG", "")).strip()
+                infr  = str(row.get("INFRATOR", "") or row.get("NOME", "")).strip()
+                placa = str(row.get("PLACA", "")).strip()
+                for col in use_cols:
+                    dt = str(row.get(col, "")).strip()
+                    st = str(row.get(f"{col}_STATUS", "")).strip()
+                    if dt or st:
+                        rows.append([fluig, infr, placa, col, dt, st])
+            self.df_original = pd.DataFrame(rows, columns=cols_fixas)
+
+        self.df_filtrado = self.df_original.copy()
+
+        # ===== UI =====
+        root = QVBoxLayout(self)
+
+        # Card dos filtros (padrão)
+        header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
+        hv = QVBoxLayout(header)
+
+        # Filtro global com "+"
+        row_global = QHBoxLayout()
+        row_global.addWidget(QLabel("Filtro global:"))
+        self.global_boxes = []
+        def add_box():
+            le = QLineEdit()
+            le.setPlaceholderText("Digite para filtrar em todas as colunas…")
+            le.textChanged.connect(self._apply_filters)
+            row_global.addWidget(le, 1)
+            self.global_boxes.append(le)
+        add_box()
+        btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28); btn_plus.clicked.connect(add_box)
+        row_global.addWidget(btn_plus)
+        hv.addLayout(row_global)
+
+        # Filtros por coluna (modo + multiseleção)
+        from utils import CheckableComboBox  # já existe
+        self.mode_filtros = {}
+        self.multi_filtros = {}
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        inner = QWidget(); gl = QGridLayout(inner); gl.setContentsMargins(0,0,0,0); gl.setHorizontalSpacing(12); gl.setVerticalSpacing(8)
+        cols = list(self.df_original.columns)
+
+        for i, col in enumerate(cols):
+            wrap = QFrame(); wv = QVBoxLayout(wrap)
+            lab = QLabel(col); lab.setObjectName("colTitle"); wv.addWidget(lab)
+
+            line = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
+            mode.currentTextChanged.connect(self._apply_filters)
+            ms = CheckableComboBox(self.df_original[col].dropna().astype(str).unique())
+            ms.changed.connect(self._apply_filters)
+            line.addWidget(mode); line.addWidget(ms)
+            wv.addLayout(line)
+
+            self.mode_filtros[col] = mode
+            self.multi_filtros[col] = ms
+            gl.addWidget(wrap, i//3, i%3)
+
+        host = QWidget(); host.setLayout(gl)
+        scroll.setWidget(host)
+        hv.addWidget(scroll)
+        root.addWidget(header)
+
+        # Tabela
+        table_card = QFrame(); table_card.setObjectName("glass")
+        apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
+        tv = QVBoxLayout(table_card)
+        self.tabela = QTableWidget()
+        self.tabela.setAlternatingRowColors(True)
+        self.tabela.setSortingEnabled(True)
+        self.tabela.horizontalHeader().setSortIndicatorShown(True)
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tabela.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tv.addWidget(self.tabela)
+
+        # Botões
+        bar = QHBoxLayout()
+        btn_limpar = QPushButton("Limpar filtros"); btn_limpar.clicked.connect(self._limpar_filtros)
+        btn_fechar = QPushButton("Fechar"); btn_fechar.clicked.connect(self.accept)
+        bar.addWidget(btn_limpar); bar.addStretch(1); bar.addWidget(btn_fechar)
+        tv.addLayout(bar)
+
+        root.addWidget(table_card)
+
+        self._apply_filters()
+
+    def _limpar_filtros(self):
+        for le in self.global_boxes:
+            le.blockSignals(True); le.clear(); le.blockSignals(False)
+        for mode in self.mode_filtros.values():
+            mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
+        for ms in self.multi_filtros.values():
+            vals = [ms.itemText(i) for i in range(ms.count())]
+            ms.set_values(vals)
+        self._apply_filters()
+
+    def _apply_filters(self):
+        from utils import df_apply_global_texts
+        df = self.df_original.copy()
+
+        # Global (todas as colunas) — suporta múltiplas caixas se clicar +
+        texts = [le.text() for le in self.global_boxes if le.text().strip()]
+        df = df_apply_global_texts(df, texts)
+
+        # Por coluna: modo + multiseleção
+        for col in df.columns:
+            mode = self.mode_filtros[col].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[col].astype(str).str.strip() != ""]
+            elif mode == "Somente vazios":
+                df = df[df[col].astype(str).str.strip() == ""]
+            sels = [s for s in self.multi_filtros[col].selected_values() if s]
+            if sels:
+                df = df[df[col].astype(str).isin(sels)]
+
+        self.df_filtrado = df
+        self._fill_table()
+
+    def _fill_table(self):
+        headers = list(self.df_filtrado.columns)
+        self.tabela.clear()
+        self.tabela.setColumnCount(len(headers))
+        self.tabela.setHorizontalHeaderLabels(headers)
+        self.tabela.setRowCount(len(self.df_filtrado))
+
+        for i, (_, r) in enumerate(self.df_filtrado.iterrows()):
+            for j, col in enumerate(headers):
+                val = "" if pd.isna(r[col]) else str(r[col])
+                it = QTableWidgetItem(val)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                # Pintar STATUS
+                if col.upper() == "STATUS":
+                    st = val.strip()
+                    if st in STATUS_COLOR:
+                        bg = STATUS_COLOR[st]
+                        it.setBackground(bg)
+                        yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114)/1000
+                        it.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
+                self.tabela.setItem(i, j, it)
+
+        self.tabela.resizeColumnsToContents()
+        self.tabela.horizontalHeader().setStretchLastSection(True)
+        self.tabela.resizeRowsToContents()
+
+
 
 def _parse_dt(val):
     s = str(val).strip()
@@ -696,17 +1035,44 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Sistema de Gestão de Frota")
         self.resize(1280, 860)
+
+        # ----- Abas principais -----
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.setDocumentMode(True)
+
+        # ----- Barra superior (header) com botões -----
+        header_card = QFrame()
+        header_card.setObjectName("card")
+        apply_shadow(header_card, radius=18)
+        hv = QVBoxLayout(header_card)
+
+        buttons = QHBoxLayout()
+
+        # ✅ Botão de Alertas
+        btn_alertas = QPushButton("Alertas")
+        btn_alertas.clicked.connect(self.mostrar_alertas)
+        buttons.addWidget(btn_alertas)
+
+        buttons.addStretch(1)
+        hv.addLayout(buttons)
+
+        # ----- Área central -----
         central = QWidget()
         cv = QVBoxLayout(central)
         cv.setContentsMargins(18, 18, 18, 18)
+
+        # Coloca o header acima das abas
+        cv.addWidget(header_card)
         cv.addWidget(self.tab_widget)
         self.setCentralWidget(central)
+
+        # ----- Tela inicial ("Início") -----
         home = QWidget()
-        hv = QVBoxLayout(home)
+        hv_home = QVBoxLayout(home)
+
+        # Título
         title_card = QFrame()
         title_card.setObjectName("glass")
         apply_shadow(title_card, radius=20, blur=60, color=QColor(0, 0, 0, 60))
@@ -716,22 +1082,29 @@ class MainWindow(QMainWindow):
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         t.setFont(QFont("Arial", 28, weight=QFont.Weight.Bold))
         tv.addWidget(t)
-        hv.addWidget(title_card)
+        hv_home.addWidget(title_card)
+
+        # Grade de módulos
         grid_card = QFrame()
         grid_card.setObjectName("card")
         apply_shadow(grid_card, radius=18)
         gv = QGridLayout(grid_card)
         gv.setContentsMargins(18, 18, 18, 18)
+
         modules = MODULES + ["Base"]
         if perms != "todos":
             modules = [m for m in modules if (m == "Base") or (m in perms)]
+
         for i, mod in enumerate(modules):
             b = QPushButton(mod)
             b.setMinimumHeight(64)
             b.setFont(QFont("Arial", 16, weight=QFont.Weight.Bold))
             b.clicked.connect(lambda _, m=mod: self.open_module(m))
             gv.addWidget(b, i // 2, i % 2)
-        hv.addWidget(grid_card)
+
+        hv_home.addWidget(grid_card)
+
+        # Barra inferior (Sair)
         bar = QHBoxLayout()
         out = QPushButton("Sair")
         out.setObjectName("danger")
@@ -739,9 +1112,11 @@ class MainWindow(QMainWindow):
         out.clicked.connect(self.logout)
         bar.addStretch(1)
         bar.addWidget(out)
-        hv.addLayout(bar)
+        hv_home.addLayout(bar)
+
         self.tab_widget.addTab(home, "Início")
 
+    # ===== utilidades das abas =====
     def close_tab(self, index):
         if index == 0:
             return
@@ -758,15 +1133,20 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(w, title)
         self.tab_widget.setCurrentWidget(w)
 
+    # ===== abrir módulos =====
     def open_module(self, module):
+        # Se já existir uma aba com esse nome, só foca
         for idx in range(self.tab_widget.count()):
-            if self.tab_widget.tabText(idx)==module:
-                self.tab_widget.setCurrentIndex(idx); return
+            if self.tab_widget.tabText(idx) == module:
+                self.tab_widget.setCurrentIndex(idx)
+                return
+
         if module == "Infrações e Multas":
             w = MultasMenu(self.add_or_focus)
             self.tab_widget.addTab(w, "Infrações e Multas")
             self.tab_widget.setCurrentWidget(w)
             return
+
         if module == "Relatórios":
             file, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
             if not file:
@@ -777,9 +1157,17 @@ class MainWindow(QMainWindow):
         elif module == "Combustível":
             w = CombustivelWindow()
         else:
-            w = QWidget(); v = QVBoxLayout(w); v.addWidget(QLabel(module))
+            w = QWidget()
+            v = QVBoxLayout(w)
+            v.addWidget(QLabel(module))
+
         self.tab_widget.addTab(w, module)
         self.tab_widget.setCurrentWidget(w)
+
+
+    def mostrar_alertas(self):
+        self.add_or_focus("Alertas", lambda: AlertsTab())
+
 
     def logout(self):
         # Esconde a janela atual e reabre a tela de login (modal)
@@ -788,7 +1176,6 @@ class MainWindow(QMainWindow):
         dlg = LoginView(auth_service=auth)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # se você usa permissões, recupere antes de abrir de novo
-            # por exemplo, lendo do CSV e chamando parse_permissions
             from utils import parse_permissions
             import pandas as pd
             users = pd.read_csv(cfg_get("users_file"), dtype=str)
@@ -798,4 +1185,3 @@ class MainWindow(QMainWindow):
             nova = MainWindow(perms if perms != "todos" else "todos")
             nova.show()
         self.close()
-

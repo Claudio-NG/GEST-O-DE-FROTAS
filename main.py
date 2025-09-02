@@ -17,7 +17,6 @@ from base import BaseWindow            # (arquivo do usuário)
 from multas import InfraMultasWindow   # (arquivo do usuário)
 from relatorios import RelatorioWindow # (arquivo do usuário)
 
-# Combustível: tenta carregar sua janela; se não existir, cria um "placeholder".
 try:
     from combustivel import CombustivelWindow  # preferencial
 except Exception:
@@ -29,7 +28,7 @@ except Exception:
             v.addWidget(QLabel("Módulo de Combustível não disponível."))
 
 
-# --------- Estilo (opcional; simples e neutro) ---------
+
 STYLE = """
 QWidget { background: #FFFFFF; color: #0B2A4A; font-size: 14px; }
 QFrame#card { background: #ffffff; border: 1px solid #214D80; border-radius: 18px; }
@@ -209,10 +208,6 @@ class MainWindow(QMainWindow):
         finally:
             self.close()
 
-
-# =========================================================
-# bootstrap
-# =========================================================
 def main():
     # Inicializa app
     app = QApplication(sys.argv)

@@ -350,10 +350,7 @@ class CombustivelWindow(QWidget):
             card["main"].setText(self._fmt_brl(main_val))
             card["sub"].setText("TOTAL: " + self._fmt_brl(total_val))
             self._fit_font(card["main"])
-<<<<<<< HEAD
-# ==========================
-# VISÃO DETALHADA DE COMBUSTÍVEL (mini-BI)
-# ==========================
+
 import re
 import pandas as pd
 from PyQt6.QtCore import Qt, QDate
@@ -969,5 +966,3 @@ class CombustivelMenu(QWidget):
         b2.clicked.connect(lambda: self.open_cb("Combustível - Visão Detalhada", lambda: CombustivelDetalhadoWindow()))
         gv.addWidget(b1, 0, 0); gv.addWidget(b2, 0, 1)
         v.addWidget(card)
-=======
->>>>>>> parent of f7f355c (ATUALIZAÇÃO DE COMBUSTÍVEL)

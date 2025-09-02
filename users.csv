@@ -1,16 +1,16 @@
 email,password,last_login,permissions,remember
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< head,nan,,,
-clnogueira@universal.org,123,2025-09-01 19:55:21.731355,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
+<<<<<<< head,,,,
+<<<<<<< head,,,,
+<<<<<<< head,,,,
+clnogueira@universal.org,123,2025-09-01 21:20:48.956052,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
 teste@teste.com,123,1754812499934949000,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
-=======,nan,,,
+=======,,,,
 clnogueira@universal.org,123,2025-08-26 15:31:49.338577,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
-=======
+=======,,,,
 clnogueira@universal.org,123,2025-08-20 19:55:45.899600,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
-=======
+>>>>>>> parent of 43624db (correções das janelas),,,,
+=======,,,,
 clnogueira@universal.org,123,2025-08-18 20:06:46.195474,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
->>>>>>> parent of f7f355c (ATUALIZAÇÃO DE COMBUSTÍVEL)
+>>>>>>> parent of f7f355c (atualização de combustível),,,,
 teste@teste.com,123,2025-08-10 07:54:59.934949,"['Combustível', 'Condutores', 'Infrações e Multas', 'Acidentes', 'Avarias Corretivas (Acidentes e Mau Uso)', 'Relatórios']",True
->>>>>>> parent of a4470f4 (update),nan,,,
+>>>>>>> parent of a4470f4 (update),,,,

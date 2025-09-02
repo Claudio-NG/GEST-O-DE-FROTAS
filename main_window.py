@@ -1,11 +1,10 @@
-<<<<<<< HEAD
+
 import os
 import re
 import pandas as pd
 
-=======
 import os, sys, re, pandas as pd
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
+
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QTabWidget, QVBoxLayout, QFrame, QHBoxLayout,
     QLabel, QPushButton, QGridLayout, QLineEdit, QComboBox, QMessageBox,
@@ -13,19 +12,15 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QFont, QColor
-<<<<<<< HEAD
 from utils import apply_shadow, CheckableComboBox, ensure_status_cols
 from constants import MODULES, DATE_FORMAT, DATE_COLS, STATUS_COLOR
-=======
 from utils import apply_shadow
 from constants import MODULES, DATE_FORMAT
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
+
 from multas import InfraMultasWindow
 from relatorios import RelatorioWindow
 from base import BaseWindow
-<<<<<<< HEAD
 from config import cfg_get
-<<<<<<< HEAD
 from PyQt6.QtWidgets import QDialog
 from login_view import LoginView
 from auth import AuthService
@@ -77,28 +72,16 @@ class _AlertasDialog(QDialog):
         close.clicked.connect(self.accept)
         v.addWidget(close)
 
-
-# =========================================================
-# Helpers de parsing para o Cenário Geral
-# =========================================================
-=======
 from combustivel import CombustivelMenu, CombustivelWindow
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
 )
 from utils import apply_shadow, CheckableComboBox
-
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
-=======
 from combustivel import CombustivelWindow
 from auth import LoginWindow
 from config import cfg_get
 
-# ==========================
-# Helpers internos do dashboard
-# ==========================
->>>>>>> parent of f7f355c (ATUALIZAÇÃO DE COMBUSTÍVEL)
 def _parse_dt(val):
     s = str(val).strip()
     if not s:
@@ -798,47 +781,6 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(w, module)
         self.tab_widget.setCurrentWidget(w)
 
-<<<<<<< HEAD
-    # --------- Alertas ---------
-    def show_alertas(self):
-        try:
-            csv_path = cfg_get("geral_multas_csv")
-            if not csv_path or not os.path.exists(csv_path):
-                QMessageBox.warning(
-                    self,
-                    "Aviso",
-                    "Caminho do GERAL_MULTAS.csv não encontrado.\n"
-                    "Abra a tela Base e configure o campo 'GERAL_MULTAS.CSV'."
-                )
-                return
-
-            df = ensure_status_cols(pd.read_csv(csv_path, dtype=str).fillna(""), csv_path=None)
-
-            linhas = []
-            # Monta a lista de alertas: qualquer coluna de data cuja _STATUS esteja Pendente/Vencido
-            for i in range(len(df)):
-                for col in DATE_COLS:
-                    sc = f"{col}_STATUS"
-                    st = str(df.at[i, sc]) if sc in df.columns else ""
-                    if st in ("Pendente", "Vencido"):
-                        linhas.append([
-                            str(df.at[i, "FLUIG"]) if "FLUIG" in df.columns else "",
-                            str(df.at[i, "INFRATOR"]) if "INFRATOR" in df.columns else "",
-                            str(df.at[i, "PLACA"]) if "PLACA" in df.columns else "",
-                            col,
-                            str(df.at[i, col]) if col in df.columns else "",
-                            st
-                        ])
-
-            dlg = _AlertasDialog(self, linhas)
-            dlg.exec()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
-
-
-=======
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
     def logout(self):
         # Esconde a janela atual e reabre a tela de login (modal)
         self.hide()

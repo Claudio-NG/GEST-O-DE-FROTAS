@@ -17,7 +17,7 @@ from utils import (
     ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible,
     build_multa_dir, _parse_dt_any, CheckableComboBox, SummaryDialog, ConferirFluigDialog
 )
-from constants import ORGAOS, DATE_FORMAT  # Usamos DATE_FORMAT do seu projeto
+from constants import ORGAOS, DATE_FORMAT
 from config import cfg_get
 
 # ====== MUITO IMPORTANTE ======
@@ -47,7 +47,7 @@ class InserirDialog(QDialog):
         form = QFormLayout(self)
         self.widgets = {}
 
-        # ordem: FLUIG primeiro + demais colunas SEM *_STATUS (e pulando ignoradas)
+        # ordem: FLUIG primeiro + demais colunas SEM *_STATUS (pulando ignoradas)
         base_fields = [c for c in self.df.columns if not c.endswith("_STATUS") and c not in IGNORED_COLS and c != "FLUIG"]
         fields = ["FLUIG"] + base_fields
 
@@ -256,27 +256,19 @@ class EditarDialog(QDialog):
 
     def load_record(self):
         key = self.le_key.text().strip()
-<<<<<<< HEAD
         if not key:
             return
 
-=======
-        if not key: return
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         csv = cfg_get("geral_multas_csv")
         self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
         if "COMENTARIO" not in self.df.columns:
             self.df["COMENTARIO"] = ""
-<<<<<<< HEAD
 
         rows = self.df.index[self.df.get("FLUIG", pd.Series([], dtype=str)).astype(str) == key].tolist()
-=======
-        rows = self.df.index[self.df["FLUIG"].astype(str)==key].tolist()
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         if not rows:
-            QMessageBox.warning(self,"Aviso","FLUIG não encontrado"); return
+            QMessageBox.warning(self, "Aviso", "FLUIG não encontrado")
+            return
         i = rows[0]
-<<<<<<< HEAD
 
         # limpar form anterior
         while self.form.count():
@@ -314,25 +306,6 @@ class EditarDialog(QDialog):
                 self.form.addRow(col, w)
                 self.widgets[col] = w
 
-=======
-        for c in [col for col in self.df.columns if not c.endswith("_STATUS")]:
-            if c in self.widgets: continue
-            if c in DATE_COLS:
-                from PyQt6.QtWidgets import QDateEdit
-                d = QDateEdit(); d.setCalendarPopup(True); d.setDisplayFormat(DATE_FORMAT)
-                d.setMinimumDate(QDate(1752,9,14)); d.setSpecialValueText("")
-                qd = to_qdate_flexible(self.df.at[i,c])
-                d.setDate(qd if qd.isValid() else d.minimumDate())
-                s = QComboBox(); s.addItems(["","Pendente","Pago","Vencido"])
-                s.setCurrentText(self.df.at[i, f"{c}_STATUS"] if f"{c}_STATUS" in self.df.columns else "")
-                box = QWidget(); hb = QHBoxLayout(box); hb.setContentsMargins(0,0,0,0); hb.addWidget(d); hb.addWidget(s)
-                self.form.addRow(c,box); self.widgets[c]=(d,s)
-            elif c=="ORGÃO":
-                cb=QComboBox(); cb.addItems(ORGAOS); cb.setCurrentText(self.df.at[i,c])
-                self.form.addRow(c,cb); self.widgets[c]=cb
-            else:
-                w=QLineEdit(self.df.at[i,c]); self.form.addRow(c,w); self.widgets[c]=w
->>>>>>> parent of 43624db (CORREÇÕES DAS JANELAS)
         self.current_index = i
 
     def save_record(self):
@@ -462,7 +435,7 @@ class GeralMultasView(QWidget):
         title.setFont(QFont("Arial", 18, weight=QFont.Weight.Bold))
         hv.addWidget(title)
 
-        # Filtros por coluna (mantive a sua UI, mas agora ela não inclui colunas ignoradas)
+        # Filtros por coluna (UI sem as colunas ignoradas)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -668,12 +641,22 @@ class InfraMultasWindow(QWidget):
         self.view_geral = GeralMultasView(self)
         lay.addWidget(self.view_geral)
 
+        # --- botão "Detalhamento" abaixo da view principal ---
+        btn_row = QHBoxLayout()
+        btn_det = QPushButton("Detalhamento")
+        btn_det.clicked.connect(self.abrir_detalhamento)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_det)
+        lay.addLayout(btn_row)
+
+        # Watcher do CSV para auto-reload
         self.watcher = QFileSystemWatcher()
         csv = cfg_get("geral_multas_csv")
         if os.path.exists(csv):
             self.watcher.addPath(csv)
         self.watcher.fileChanged.connect(self._csv_changed)
 
+    # --------- Watcher helpers ---------
     def _csv_changed(self, path):
         if not os.path.exists(path):
             QTimer.singleShot(500, lambda: self._readd_watch(path))
@@ -688,6 +671,18 @@ class InfraMultasWindow(QWidget):
     def reload_geral(self):
         self.view_geral.recarregar()
 
+    # --------- Abrir Detalhamento (RelatorioWindow) ---------
+    def abrir_detalhamento(self):
+        from relatorios import RelatorioWindow
+        path = cfg_get("detalhamento_path")
+        if not path or not os.path.exists(path):
+            QMessageBox.information(self, "Detalhamento", "Configure a planilha de Detalhamento na Base.")
+            return
+        w = RelatorioWindow(path)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.show()
+
+    # --------- Conferir FLUIG (diferenças CSV x Detalhamento) ---------
     def conferir_fluig(self):
         try:
             detalhamento_path = cfg_get("detalhamento_path")
@@ -728,6 +723,7 @@ class InfraMultasWindow(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Erro", str(e))
 
+    # --------- CRUD ---------
     def inserir(self, prefill_fluig=None):
         dlg = InserirDialog(self, prefill_fluig)
         dlg.exec()
@@ -750,6 +746,7 @@ class InfraMultasWindow(QWidget):
         dlg.exec()
         self.reload_geral()
 
+    # --------- Fase Pastores (atualiza SGU=Pago quando aplicável) ---------
     def fase_pastores(self):
         try:
             path = cfg_get("pastores_file")
@@ -794,7 +791,6 @@ class InfraMultasWindow(QWidget):
             QMessageBox.critical(self, "Erro", str(e))
         self.reload_geral()
 
-    # ===== Novo: comentar por FLUIG =====
     def comentar_with_key(self, key):
         key = str(key).strip()
         if not key:

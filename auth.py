@@ -1,18 +1,17 @@
+# auth.py (SUBSTITUA a classe inteira por esta versão ou ajuste estes pontos)
 
 import os
 import pandas as pd
 from typing import Tuple
-from config import cfg_get  # lê base.json com overrides do usuário
+from config import cfg_get
 from constants import USERS_FILE as USERS_FILE_DEFAULT
 
 class AuthService:
     def __init__(self, users_path: str | None = None):
-        # Se o chamador passar um caminho, usa. Senão tenta config -> constants.
         self.users_path = users_path or cfg_get("users_file") or USERS_FILE_DEFAULT
-        # Garante arquivo e colunas base
+        self.current_user: str | None = None         # <<<<<< ADICIONEI
         self._ensure_file()
 
-    # ------------- utilitários -------------
     def _ensure_file(self):
         if not os.path.exists(self.users_path):
             df = pd.DataFrame(columns=['email','password','last_login','permissions','remember'])
@@ -22,21 +21,14 @@ class AuthService:
         try:
             return pd.read_csv(self.users_path, dtype=str, parse_dates=['last_login'])
         except Exception:
-            # Em último caso, cria vazio com as colunas esperadas
             return pd.DataFrame(columns=['email','password','last_login','permissions','remember'])
 
     def _save(self, df: pd.DataFrame):
         df.to_csv(self.users_path, index=False)
 
-    # ------------- API pública -------------
     def login(self, user: str, password: str) -> Tuple[bool, str]:
-        """
-        Retorna (ok, mensagem_de_erro).
-        ok=True se usuário/senha conferem.
-        """
         email = (user or "").strip().lower()
         pwd = (password or "").strip()
-
         if not email or not pwd:
             return False, "Informe usuário e senha."
 
@@ -44,31 +36,51 @@ class AuthService:
         if df.empty or 'email' not in df.columns or 'password' not in df.columns:
             return False, "Base de usuários inválida."
 
-        # normaliza colunas
         df['email'] = df['email'].astype(str).str.strip().str.lower()
         df['password'] = df['password'].astype(str)
 
         hits = df.index[df['email'] == email].tolist()
         if not hits:
             return False, "Usuário não encontrado."
-
         i = hits[0]
         if str(df.at[i, 'password']).strip() != pwd:
             return False, "Senha incorreta."
 
-        # atualiza last_login (e mantém remember como está; a UI cuida disso)
         df.at[i, 'last_login'] = pd.Timestamp.now()
         self._save(df)
+
+        self.current_user = email             # <<<<<< ADICIONEI
         return True, ""
+
+    # util pra marcar/desmarcar "lembrar-me" no CSV
+    def set_remember(self, email: str, remember: bool):
+        df = self._load()
+        email_n = (email or "").strip().lower()
+        idxs = df.index[df['email'].astype(str).str.strip().str.lower() == email_n].tolist()
+        if idxs:
+            df.at[idxs[0], 'remember'] = bool(remember)
+            self._save(df)
+
+    # pega o último usuário marcado como remember=True (se houver)
+    def get_remembered_user(self) -> str | None:
+        df = self._load()
+        if 'remember' not in df.columns or df.empty:
+            return None
+        try:
+            remembered = df[df['remember'].astype(str).str.lower().isin(["true","1","yes","y","sim"])]
+            if remembered.empty:
+                return None
+            # mais recente pelo last_login, se houver
+            if 'last_login' in remembered.columns:
+                remembered = remembered.sort_values('last_login', ascending=False)
+            return str(remembered.iloc[0]['email']).strip().lower()
+        except:
+            return None
 
     def list_users(self) -> pd.DataFrame:
         return self._load()
 
     def upsert_user(self, email: str, password: str, permissions=None, remember: bool=False):
-        """
-        Cria/atualiza usuário por email.
-        permissions pode ser lista, string ou None.
-        """
         df = self._load()
         email_n = (email or "").strip().lower()
         pwd = (password or "").strip()
@@ -83,7 +95,6 @@ class AuthService:
         idxs = df.index[df['email'].astype(str).str.strip().str.lower() == email_n].tolist()
         perms_val = permissions if permissions is not None else ""
         if isinstance(perms_val, list):
-            # salva como string de lista; sua UI já sabe interpretar
             perms_val = str(perms_val)
 
         if idxs:

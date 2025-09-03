@@ -1,9 +1,4 @@
-# multas.py
-import os
-import re
-import shutil
-import pandas as pd
-
+import os, re, shutil, pandas as pd
 from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -13,16 +8,15 @@ from PyQt6.QtWidgets import (
     QDateEdit, QCompleter
 )
 
+from gestao_frota_single import (
+    DATE_FORMAT, DATE_COLS, STATUS_COLOR,
+    GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR, ORGAOS,
+    PORTUGUESE_MONTHS,
+    cfg_get, cfg_set, cfg_all
+)
 from utils import (
     ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible,
     build_multa_dir, _parse_dt_any, CheckableComboBox, SummaryDialog, ConferirFluigDialog
-)
-from constants import ORGAOS, DATE_FORMAT
-from config import cfg_get
-
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QLabel, QScrollArea, QHBoxLayout, QComboBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QLineEdit
 )
 
 
@@ -136,7 +130,7 @@ class InserirDialog(QDialog):
         # MES/ANO a partir da Data Infração (opcional)
         try:
             dt = pd.to_datetime(row["Data Infração"].iloc[0], dayfirst=False)
-            from constants import PORTUGUESE_MONTHS
+    
             if "MES" in self.widgets:
                 self.widgets["MES"].setText(PORTUGUESE_MONTHS.get(dt.month, ""))
             if "ANO" in self.widgets:
@@ -144,7 +138,7 @@ class InserirDialog(QDialog):
         except:
             pass
 
-        # Preencher DATA INDICAÇÃO a partir de Data Limite, se existir
+        
         try:
             d2 = pd.to_datetime(row["Data Limite"].iloc[0], dayfirst=False)
             if "DATA INDICAÇÃO" in self.widgets and isinstance(self.widgets["DATA INDICAÇÃO"], tuple):
@@ -420,9 +414,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
 )
 
-from config import cfg_get
+
 from utils import apply_shadow, ensure_status_cols, CheckableComboBox
-from constants import STATUS_COLOR  # cores verde/amarelo/vermelho
+
 
 # ✅ só essas 3 datas contam para status/pintura
 DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"]

@@ -1,6 +1,4 @@
-# relatorios.py — SUBSTITUA A CLASSE INTEIRA POR ESTA
-import os
-import pandas as pd
+import os, pandas as pd
 from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -10,7 +8,8 @@ from PyQt6.QtWidgets import (
 )
 
 from utils import ensure_status_cols, apply_shadow, CheckableComboBox, df_apply_global_texts
-from constants import DATE_COLS, STATUS_COLOR
+from gestao_frota_single import DATE_COLS, STATUS_COLOR
+
 
 class RelatorioWindow(QWidget):
     def __init__(self, caminho_arquivo):

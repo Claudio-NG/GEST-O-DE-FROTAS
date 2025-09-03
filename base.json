@@ -1,10 +1,14 @@
 {
   "geral_multas_csv": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/GERAL_MULTAS.csv",
   "multas_root": "T:\\Veiculos\\VEÍCULOS - RN\\MULTAS",
-  "detalhamento_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\Notificações de Multas - Detalhamento.xlsx",
-  "pastores_file": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\Notificações de Multas - Fase Pastores.xlsx",
+  "detalhamento_path": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/Notificações de Multas - Detalhamento.xlsx",
+  "pastores_file": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/Notificações de Multas - Fase Pastores.xlsx",
   "pastores_dir": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS",
-  "extrato_geral_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\ExtratoGeral.xlsx",
-  "extrato_simplificado_path": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS\\ExtratoSimplificado.xlsx",
-  "users_file": "users.csv"
+  "extrato_geral_path": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/ExtratoGeral.xlsx",
+  "extrato_simplificado_path": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/ExtratoSimplificado.xlsx",
+  "users_file": "users.csv",
+  "remember_user": "clnogueira@universal.org",
+  "remember_pwd": "MTIz",
+  "remember_flag": "1",
+  "condutor_identificado_path": "C:/Users/clnogueira/Desktop/GITHUB/GEST-O-DE-FROTAS/Notificações de Multas - Condutor Identificado.xlsx"
 }

@@ -10,10 +10,10 @@ from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QWidget
 )
 
-from constants import DATE_COLS, STATUS_COLOR, GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR
 
 import re
 import pandas as pd
+from gestao_frota_single import DATE_COLS, STATUS_COLOR, GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR, cfg_get, cfg_set
 
 def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
     """

@@ -3,16 +3,13 @@ from decimal import Decimal
 import pandas as pd
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QPushButton, QComboBox, QLabel, QGridLayout, QMessageBox
-from constants import PORTUGUESE_MONTHS
-from utils import apply_shadow
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
 )
-from utils import apply_shadow, CheckableComboBox
 
+from gestao_frota_single import PORTUGUESE_MONTHS, DATE_FORMAT, cfg_get, cfg_set, cfg_all
+from utils import apply_shadow, CheckableComboBox
 
 class CombustivelWindow(QWidget):
     def __init__(self):
@@ -360,8 +357,29 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout
 )
 from utils import apply_shadow
-from constants import DATE_FORMAT
-from config import cfg_get
+
+import os, re
+from decimal import Decimal
+import pandas as pd
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
+)
+
+from utils import apply_shadow, CheckableComboBox
+
+# >>> mudou aqui
+from gestao_frota_single import PORTUGUESE_MONTHS, cfg_get
+
+# SUBSTITUA:
+# from constants import ...
+# from config import cfg_get
+
+# POR:
+from gestao_frota_single import DATE_FORMAT, cfg_get, cfg_set, cfg_all
+
 
 def _dt_parse_any(s):
     s = str(s).strip()

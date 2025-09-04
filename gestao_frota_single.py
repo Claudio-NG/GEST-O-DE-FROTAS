@@ -3,12 +3,10 @@ from pathlib import Path
 import pandas as pd
 
 
-# ====== [SINGLE-SOURCE: constants + config] ======
 import os, json
 from pathlib import Path
 from PyQt6.QtGui import QColor
 
-# ---- Caminhos padrão (ajuste se quiser) ----
 USERS_FILE = "users.csv"
 
 BASE_DIR = os.path.expanduser("~")
@@ -930,12 +928,16 @@ class MainWindow(QMainWindow):
         # Janela de Infrações/Multas já pronta
         self.add_or_focus("Infrações e Multas", lambda: InfraMultasWindow())
 
+
     def open_combustivel(self):
-        # Usa seus paths configuráveis (aplique sua correção de cfg_get no módulo)
+
         try:
-            self.add_or_focus("Combustível", lambda: CombustivelWindow())
+            from combustivel import CombustivelMenu
+            self.add_or_focus("Combustível", lambda: CombustivelMenu(self.add_or_focus))
         except Exception as e:
-            QMessageBox.warning(self, "Combustível", str(e))
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Combustível", f"Não foi possível abrir o menu de Combustível.\n{e}")
+            
 
     def open_relatorios(self):
         # Pede um arquivo e abre o Relatório

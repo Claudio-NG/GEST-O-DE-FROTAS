@@ -657,8 +657,6 @@ class GeralMultasView(QWidget):
             return
         self.parent_for_edit.editar_with_key(key)
 
-
-# ---------------------- JANELA (CONTÊINER) ----------------------
 class InfraMultasWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -669,12 +667,23 @@ class InfraMultasWindow(QWidget):
         self.view_geral = GeralMultasView(self)
         lay.addWidget(self.view_geral)
 
-        # --- botão "Detalhamento" abaixo da view principal ---
+        # --- linha de botões abaixo da view ---
         btn_row = QHBoxLayout()
+
         btn_det = QPushButton("Detalhamento")
         btn_det.clicked.connect(self.abrir_detalhamento)
-        btn_row.addStretch(1)
+
+        btn_aberto = QPushButton("Multas em Aberto")
+        btn_aberto.clicked.connect(self.abrir_multas_em_aberto)
+
+        btn_cenario = QPushButton("Cenário Geral")
+        btn_cenario.clicked.connect(self.abrir_cenario_geral)
+
         btn_row.addWidget(btn_det)
+        btn_row.addWidget(btn_aberto)
+        btn_row.addWidget(btn_cenario)
+        btn_row.addStretch(1)
+
         lay.addLayout(btn_row)
 
         # Watcher do CSV para auto-reload
@@ -710,46 +719,65 @@ class InfraMultasWindow(QWidget):
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.show()
 
+    def abrir_multas_em_aberto(self):
+        # Foca na visão principal e recarrega o CSV (mantendo filtros padrão de "abertas" se aplicáveis)
+        try:
+            self.view_geral.recarregar()
+            QMessageBox.information(self, "Multas em Aberto", "Exibindo Multas em Aberto na tabela principal.")
+        except Exception as e:
+            QMessageBox.warning(self, "Multas em Aberto", str(e))
+
+    def abrir_cenario_geral(self):
+        try:
+            from main_window import CenarioGeralWindow
+        except Exception:
+            try:
+                from .main_window import CenarioGeralWindow
+            except Exception as e:
+                QMessageBox.critical(self, "Cenário Geral", f"Classe CenarioGeralWindow não encontrada: {e}")
+                return
+        try:
+            w = CenarioGeralWindow()
+            w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            w.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Cenário Geral", f"Não foi possível abrir: {e}")
+
     # --------- Conferir FLUIG (diferenças CSV x Detalhamento) ---------
     def conferir_fluig(self):
+        # Imports locais para evitar símbolos indefinidos no arquivo inteiro
+        from utils import ensure_status_cols, ConferirFluigDialog
+
         try:
             detalhamento_path = cfg_get("detalhamento_path")
             df_det = pd.read_excel(detalhamento_path, dtype=str).fillna("")
             if df_det.empty or len(df_det.columns) < 2:
-                QMessageBox.warning(self, "Aviso", "Planilha inválida."); return
+                QMessageBox.information(self, "Conferir FLUIG", "Planilha de Detalhamento vazia ou inválida.")
+                return
 
-            status_col = next((c for c in df_det.columns if c.strip().lower() == "status"), df_det.columns[1])
-            mask_aberta = df_det[status_col].astype(str).str.strip().str.lower().eq("aberta")
-            df_open = df_det[mask_aberta].copy()
+            # coluna FLUIG do detalhamento
+            det_fcol = next((c for c in df_det.columns if "fluig" in str(c).lower() or "nº fluig" in str(c).lower()), None)
+            if det_fcol is None:
+                QMessageBox.warning(self, "Conferir FLUIG", "Coluna FLUIG não encontrado no Detalhamento.")
+                return
 
-            if "Nº Fluig" in df_open.columns:
-                fcol = "Nº Fluig"
-            else:
-                fcol = next((c for c in df_open.columns if "fluig" in c.lower()), None)
-            if not fcol:
-                QMessageBox.warning(self, "Aviso", "Coluna de Fluig não encontrada."); return
+            # CSV base
+            csv_path = cfg_get("geral_multas_csv")
+            if not csv_path or not os.path.exists(csv_path):
+                QMessageBox.warning(self, "Conferir FLUIG", "Caminho do GERAL_MULTAS.csv não configurado.")
+                return
+            df_csv = pd.read_csv(csv_path, dtype=str).fillna("")
+            df_csv = ensure_status_cols(df_csv, csv_path)
 
-            df_csv = ensure_status_cols(pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna(""), csv_path=cfg_get("geral_multas_csv"))
-            if "COMENTARIO" not in df_csv.columns:
-                df_csv["COMENTARIO"] = ""
-                df_csv.to_csv(cfg_get("geral_multas_csv"), index=False)
+            # Normaliza e compara
+            left_only = df_det[~df_det[det_fcol].astype(str).str.strip().isin(df_csv.get("FLUIG", pd.Series([], dtype=str)).astype(str).str.strip())]
+            right_only = df_csv[~df_csv.get("FLUIG", pd.Series([], dtype=str)).astype(str).str.strip().isin(df_det[det_fcol].astype(str).str.strip())]
 
-            fluig_det = set(df_open[fcol].astype(str).str.strip())
-            fluig_csv = set(df_csv["FLUIG"].astype(str).str.strip()) if "FLUIG" in df_csv.columns else set()
-            no_csv_codes = sorted([c for c in fluig_det if c and c not in fluig_csv])
-            no_det_codes = sorted([c for c in fluig_csv if c and c not in fluig_det])
-
-            left_cols = [fcol] + [c for c in ["Placa", "Nome", "AIT", "Data Limite", "Data Infração", "Status"] if c in df_open.columns]
-            df_left = df_open[df_open[fcol].astype(str).str.strip().isin(no_csv_codes)][left_cols].copy()
-            df_left.rename(columns={fcol: "Nº Fluig"}, inplace=True)
-
-            right_cols = [c for c in ["FLUIG", "PLACA", "INFRATOR", "NOTIFICACAO", "ANO", "MES", "COMENTARIO"] if c in df_csv.columns]
-            df_right = df_csv[df_csv["FLUIG"].astype(str).str.strip().isin(no_det_codes)][right_cols].copy()
-
-            dlg = ConferirFluigDialog(self, df_left, df_right)
+            dlg = ConferirFluigDialog(self, left_only, right_only)
             dlg.exec()
+
         except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
+            QMessageBox.critical(self, "Conferir FLUIG", str(e))
 
     # --------- CRUD ---------
     def inserir(self, prefill_fluig=None):
@@ -774,52 +802,48 @@ class InfraMultasWindow(QWidget):
         dlg.exec()
         self.reload_geral()
 
-    # --------- Fase Pastores (atualiza SGU=Pago quando aplicável) ---------
     def fase_pastores(self):
+        # Import local elimina o erro do Pylance ("load_fase_pastores" não está definido)
+        from utils import load_fase_pastores
+
         try:
-            path = cfg_get("pastores_file")
-            if not path or not os.path.exists(path):
-                QMessageBox.warning(self, "Aviso", "Planilha Fase Pastores não configurada na aba Base.")
-                return
-            dfp = pd.read_excel(path, dtype=str).fillna("")
-            fcol = next((c for c in dfp.columns if "fluig" in c.lower()), None)
-            dcol = next((c for c in dfp.columns if "data" in c.lower() and "pastor" in c.lower()), None)
-            tcol = next((c for c in dfp.columns if "tipo" in c.lower()), None)
-            if not fcol or not dcol or not tcol:
-                QMessageBox.warning(self, "Aviso", "Colunas inválidas em Fase Pastores.")
+            df = load_fase_pastores()
+            if df.empty:
+                QMessageBox.information(self, "Fase Pastores", "Não foi possível localizar a planilha de Fase Pastores.")
                 return
 
-            df = ensure_status_cols(pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna(""), csv_path=None)
-            if "COMENTARIO" not in df.columns:
-                df["COMENTARIO"] = ""
+            # Inserir novos FLUIGs
+            csv = cfg_get("geral_multas_csv")
+            base = pd.read_csv(csv, dtype=str).fillna("")
+            base["FLUIG"] = base.get("FLUIG", "").astype(str).str.strip()
 
-            idx = {str(f).strip(): i for i, f in enumerate(df.get("FLUIG", pd.Series([], dtype=str)).astype(str))}
-            changed = False
-            for _, r in dfp.iterrows():
-                f = str(r[fcol]).strip()
-                tipo = str(r[tcol]).upper()
-                data = str(r[dcol]).strip()
-                if not f or f not in idx:
-                    continue
-                if "PASTOR" not in tipo or not data:
-                    continue
-                qd = _parse_dt_any(data)
-                if not qd.isValid():
-                    continue
-                i = idx[f]
-                df.at[i, "SGU"] = qd.toString(DATE_FORMAT)
-                df.at[i, "SGU_STATUS"] = "Pago"
-                changed = True
-            if changed:
-                df.to_csv(cfg_get("geral_multas_csv"), index=False)
-                QMessageBox.information(self, "Sucesso", "Atualizado.")
+            novos = df[~df["FLUIG"].astype(str).str.strip().isin(base["FLUIG"])]
+            if not novos.empty:
+                # colunas mínimas
+                for c in ["INFRATOR","ANO","MES","PLACA","NOTIFICACAO","ORGÃO",
+                          "DATA INDICAÇÃO","BOLETO","SGU",
+                          "DATA INDICAÇÃO_STATUS","BOLETO_STATUS","SGU_STATUS","COMENTARIO"]:
+                    if c not in base.columns:
+                        base[c] = ""
+
+                # preenche campos obrigatórios vazios para alinhar com base
+                for c in ["INFRATOR","ANO","MES","PLACA","NOTIFICACAO","ORGÃO",
+                          "DATA INDICAÇÃO","BOLETO","SGU",
+                          "DATA INDICAÇÃO_STATUS","BOLETO_STATUS","SGU_STATUS","COMENTARIO"]:
+                    if c not in novos.columns:
+                        novos[c] = ""
+
+                base = pd.concat([base, novos[base.columns]], ignore_index=True)
+                base.to_csv(csv, index=False)
+                QMessageBox.information(self, "Fase Pastores", f"Inseridos {len(novos)} registros.")
             else:
-                QMessageBox.information(self, "Sucesso", "Nada para atualizar.")
+                QMessageBox.information(self, "Fase Pastores", "Nenhum novo FLUIG encontrado.")
         except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
+            QMessageBox.critical(self, "Fase Pastores", str(e))
         self.reload_geral()
 
     def comentar_with_key(self, key):
+        from PyQt6.QtWidgets import QInputDialog  # import local para garantir símbolo
         key = str(key).strip()
         if not key:
             QMessageBox.warning(self, "Comentário", "FLUIG inválido para comentar.")

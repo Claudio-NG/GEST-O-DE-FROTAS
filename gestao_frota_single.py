@@ -106,6 +106,7 @@ import os, json
 from pathlib import Path
 from PyQt6.QtGui import QColor
 
+
 USERS_FILE = "users.csv"
 
 BASE_DIR = os.path.expanduser("~")
@@ -801,61 +802,155 @@ class DependenciesDialog(QDialog):
             cfg_set(k, le.text().strip())
         self.accept()
 
+
+
+# --- gestao_frota_single.py (adicione/substitua esta classe inteira) ---
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QTabWidget, QVBoxLayout, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QPushButton, QFileDialog, QMessageBox
+)
+
+# Imports internos do seu projeto
+from gestao_frota_single import cfg_get, MODULES  # já existem neste arquivo
+from utils import apply_shadow  # sombra padrão do seu tema
+from relatorios import RelatorioWindow
+from multas import InfraMultasWindow
+from combustivel import CombustivelWindow
+
+# Tentamos obter a AlertsTab onde ela estiver (normalmente em main_window.py)
+try:
+    from main_window import AlertsTab
+except Exception:
+    try:
+        from .main_window import AlertsTab
+    except Exception:
+        AlertsTab = None  # se não existir, mostramos aviso ao clicar
+
 class MainWindow(QMainWindow):
+    """
+    Janela principal em abas:
+      - Aba 'Início' com botões grandes
+      - Cada módulo abre em uma nova aba (sem duplicar)
+    Botões: Base, Infrações e Multas, Combustível, Relatórios, Alertas
+    """
     def __init__(self, user_email: str | None = None):
         super().__init__()
         self.setWindowTitle("GESTÃO DE FROTAS")
         self.resize(1280, 860)
 
+        # Abas
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.setCentralWidget(self.tab_widget)
 
-        central = QWidget(); cv = QVBoxLayout(central); cv.setContentsMargins(18,18,18,18)
-        # Topo
-        header = QFrame(); header.setObjectName("glass"); apply_shadow(header, radius=20)
-        hv = QVBoxLayout(header)
-        t = QLabel("Gestão de Frotas"); t.setAlignment(Qt.AlignmentFlag.AlignCenter); t.setObjectName("headline")
-        hv.addWidget(t)
+        # ==== ABA INÍCIO ====
+        home = QWidget()
+        hv = QVBoxLayout(home)
+
+        # Cabeçalho
+        title_card = QFrame(); title_card.setObjectName("glass")
+        apply_shadow(title_card, radius=20, blur=60, color=QColor(0, 0, 0, 60))
+        tv = QVBoxLayout(title_card); tv.setContentsMargins(24, 24, 24, 24)
+
+        t = QLabel("Gestão de Frota")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setFont(QFont("Arial", 28, QFont.Weight.Bold))
+        tv.addWidget(t)
+
         if user_email:
-            hv.addWidget(QLabel(f"Logado como: {user_email}"), alignment=Qt.AlignmentFlag.AlignCenter)
-        cv.addWidget(header)
+            tv.addWidget(QLabel(f"Logado como: {user_email}"),
+                         alignment=Qt.AlignmentFlag.AlignCenter)
+        hv.addWidget(title_card)
 
-        menu = QFrame(); menu.setObjectName("card"); apply_shadow(menu, radius=18)
-        mv = QHBoxLayout(menu); mv.setSpacing(10)
+        # Cartão com botões
+        grid_card = QFrame(); grid_card.setObjectName("card"); apply_shadow(grid_card, radius=18)
+        gv = QGridLayout(grid_card); gv.setContentsMargins(18, 18, 18, 18)
 
-        btn_base = QPushButton("Base")
-        btn_alertas = QPushButton("Alertas")
-        for b in (btn_base, btn_alertas):
-            b.setMinimumHeight(48); mv.addWidget(b)
-        cv.addWidget(menu)
+        buttons = [
+            ("Base", self.open_base),
+            ("Infrações e Multas", self.open_multas),
+            ("Combustível", self.open_combustivel),
+            ("Relatórios", self.open_relatorios),
+            ("Alertas", self.open_alertas),
+        ]
 
-        # Tabs
-        cv.addWidget(self.tab_widget, 1)
-        self.setCentralWidget(central)
+        for i, (label, slot) in enumerate(buttons):
+            b = QPushButton(label)
+            b.setMinimumHeight(64)
+            b.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+            b.clicked.connect(slot)
+            gv.addWidget(b, i // 2, i % 2)
 
-        # Conexões
-        btn_base.clicked.connect(lambda: self.add_or_focus("Base", BaseTab))
-        btn_alertas.clicked.connect(lambda: self.add_or_focus("Alertas", AlertsTab))
+        hv.addWidget(grid_card)
 
-        self.add_or_focus("Base", BaseTab)
+        # Barra inferior
+        bar = QHBoxLayout()
+        out = QPushButton("Sair"); out.setObjectName("danger")
+        out.setMinimumHeight(44)
+        out.clicked.connect(self.close)
+        bar.addStretch(1); bar.addWidget(out)
+        hv.addLayout(bar)
 
-    def add_or_focus(self, title, widget_cls):
-        for i in range(self.tab_widget.count()):
-            if self.tab_widget.tabText(i) == title:
-                self.tab_widget.setCurrentIndex(i)
+        # Coloca a Home
+        self.tab_widget.addTab(home, "Início")
+
+    # ===== Helpers =====
+    def add_or_focus(self, title, factory):
+        """Se a aba já existe, foca; senão cria."""
+        for idx in range(self.tab_widget.count()):
+            if self.tab_widget.tabText(idx).strip().lower() == str(title).strip().lower():
+                self.tab_widget.setCurrentIndex(idx)
                 return
-        w = widget_cls()
+        w = factory()
         self.tab_widget.addTab(w, title)
         self.tab_widget.setCurrentWidget(w)
 
-    def close_tab(self, index):
-        # impede fechar a primeira guia se quiser (opcional)
-        if index < 0: return
+    def close_tab(self, index: int):
+        """Não permite fechar a Home (índice 0)."""
+        if index == 0:
+            return
         w = self.tab_widget.widget(index)
         self.tab_widget.removeTab(index)
         w.deleteLater()
+
+    # ===== Ações dos botões =====
+    def open_base(self):
+        try:
+            # BaseTab já existe no mesmo arquivo (gestao_frota_single)
+            from gestao_frota_single import BaseTab
+            self.add_or_focus("Base", lambda: BaseTab())
+        except Exception as e:
+            QMessageBox.warning(self, "Base", f"Não foi possível abrir a Base.\n{e}")
+
+    def open_multas(self):
+        # Janela de Infrações/Multas já pronta
+        self.add_or_focus("Infrações e Multas", lambda: InfraMultasWindow())
+
+    def open_combustivel(self):
+        # Usa seus paths configuráveis (aplique sua correção de cfg_get no módulo)
+        try:
+            self.add_or_focus("Combustível", lambda: CombustivelWindow())
+        except Exception as e:
+            QMessageBox.warning(self, "Combustível", str(e))
+
+    def open_relatorios(self):
+        # Pede um arquivo e abre o Relatório
+        p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
+        if not p:
+            return
+        self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
+
+    def open_alertas(self):
+        # Aba Alertas mostrando as 3 datas oficiais + *_STATUS
+        if AlertsTab is None:
+            QMessageBox.warning(self, "Alertas", "Classe AlertsTab não encontrada.")
+            return
+        self.add_or_focus("Alertas", lambda: AlertsTab())
+
 
 
 def run():

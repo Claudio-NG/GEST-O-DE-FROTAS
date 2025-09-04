@@ -20,10 +20,9 @@ from utils import (
 )
 
 
-DATE_COLS_MUL = ["DATA INDITAÇÃO", "BOLETO", "SGU"]
+DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"] 
 
 IGNORED_COLS = {"LANÇAMENTOS DE NFF", "VALIDAÇÃO", "CONCLUSÃO"}
-
 
 class InserirDialog(QDialog):
     def __init__(self, parent, prefill_fluig=None):

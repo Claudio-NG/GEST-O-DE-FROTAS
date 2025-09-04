@@ -1,228 +1,284 @@
-import os, pandas as pd
-from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
-from PyQt6.QtGui import QColor, QFontMetrics
+from __future__ import annotations
+
+import datetime as dt
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QWidget as QW, QGridLayout, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QComboBox, QSizePolicy, QFileDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QTableWidget,
+    QTableWidgetItem, QSizePolicy, QGridLayout, QSpacerItem, QProgressBar, QFileDialog
 )
 
-from utils import ensure_status_cols, apply_shadow, CheckableComboBox, df_apply_global_texts
-from gestao_frota_single import DATE_COLS, STATUS_COLOR
+from utils import (
+    THEME, apply_shadow, load_df, ensure_datetime, apply_period, prepare_status_hex,
+    run_tasks, EVENT_BUS, quick_search, export_to_csv, export_to_excel,
+    GlobalFilterBar, CheckableComboBox, normalize_text
+)
+from main_window import BaseView
+
+try:
+    from gestao_frota_single import (
+        DETALHAMENTO_PATH,
+        EXTRATO_GERAL_PATH,
+        EXTRATO_SIMPLIFICADO_PATH,
+        CONDUTOR_IDENTIFICADO_PATH,
+        GERAL_MULTAS_CSV,
+    )
+except Exception:
+    DETALHAMENTO_PATH = "Notificações de Multas - Detalhamento.xlsx"
+    EXTRATO_GERAL_PATH = "ExtratoGeral.xlsx"
+    EXTRATO_SIMPLIFICADO_PATH = "ExtratoSimplificado.xlsx"
+    CONDUTOR_IDENTIFICADO_PATH = "Notificações de Multas - Condutor Identificado.xlsx"
+    GERAL_MULTAS_CSV = "GERAL_MULTAS.csv"
 
 
-class RelatorioWindow(QWidget):
-    def __init__(self, caminho_arquivo):
-        super().__init__()
-        fm = QFontMetrics(self.font())
-        self.max_pix = fm.horizontalAdvance("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
-        self.setWindowTitle("Relatórios")
-        self.resize(1280, 820)
+class RelatoriosView(BaseView):
+    def __init__(self):
+        super().__init__("Relatórios")
+        self._df_sources: Dict[str, pd.DataFrame] = {}
+        self._df_merged: pd.DataFrame = pd.DataFrame()
 
-        self.path = caminho_arquivo
-        self.df_original = pd.DataFrame()
-        self.df_filtrado = pd.DataFrame()
+        self._search = GlobalFilterBar("Busca global:")
+        self._cmb_cols_filter = CheckableComboBox([])
+        self._cmb_status = CheckableComboBox(["ABERTA","VENCIDA","PAGA","CANCELADA","EM ANALISE","EM RECURSO"])
 
-        self.mode_filtros = {}
-        self.multi_filtros = {}
-        self.global_boxes = []
+        self._btn_export_csv = QPushButton("Exportar CSV")
+        self._btn_export_xlsx = QPushButton("Exportar XLSX")
 
-        root = QVBoxLayout(self)
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(4)
+        self._progress.hide()
 
-        # Header / ações
-        header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
-        hv = QVBoxLayout(header)
+        self._build_advanced()
+        self._build_tabs()
+
+        self.header.btn_aplicar.clicked.connect(self._generate)
+        self._search.changed.connect(lambda *_: self._apply_filters())
+        self._cmb_cols_filter.changed.connect(lambda *_: self._apply_filters())
+        self._cmb_status.changed.connect(lambda *_: self._apply_filters())
+        self._btn_export_csv.clicked.connect(self._export_csv)
+        self._btn_export_xlsx.clicked.connect(self._export_xlsx)
+
+        QTimer.singleShot(60, self._generate)
+
+    # ---------- UI ----------
+
+    def _build_advanced(self):
+        wrap = QFrame()
+        g = QGridLayout(wrap); g.setContentsMargins(0,0,0,0); g.setHorizontalSpacing(8)
+        r = 0
+
+        g.addWidget(QLabel("Status:"), r, 0, 1, 1); g.addWidget(self._cmb_status, r, 1, 1, 1); r += 1
+        g.addWidget(QLabel("Filtrar por colunas (texto contém):"), r, 0, 1, 1); g.addWidget(self._cmb_cols_filter, r, 1, 1, 2); r += 1
+        g.addWidget(QLabel("Busca:"), r, 0, 1, 1); g.addWidget(self._search, r, 1, 1, 2); r += 1
 
         actions = QHBoxLayout()
-        btn_abrir = QPushButton("Abrir…"); btn_abrir.clicked.connect(self._abrir_arquivo)
-        btn_recarregar = QPushButton("Recarregar"); btn_recarregar.clicked.connect(self.recarregar)
-        btn_limpar = QPushButton("Limpar filtros"); btn_limpar.clicked.connect(self.limpar_filtros)
-        btn_export = QPushButton("Exportar Excel"); btn_export.clicked.connect(self.exportar_excel)
-        actions.addWidget(btn_abrir); actions.addWidget(btn_recarregar); actions.addWidget(btn_limpar); actions.addStretch(1); actions.addWidget(btn_export)
-        hv.addLayout(actions)
+        actions.addStretch(1)
+        actions.addWidget(self._btn_export_csv)
+        actions.addWidget(self._btn_export_xlsx)
+        g.addLayout(actions, r, 0, 1, 3); r += 1
 
-        # Filtro global (único) com botão +
-        row_global = QHBoxLayout()
-        row_global.addWidget(QLabel("Filtro global:"))
-        def add_box():
-            le = QLineEdit()
-            le.setPlaceholderText("Digite para filtrar em TODAS as colunas…")
-            le.setMaximumWidth(self.max_pix)
-            le.textChanged.connect(self.atualizar_filtro)
-            self.global_boxes.append(le)
-            row_global.addWidget(le, 1)
-        add_box()
-        btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28); btn_plus.clicked.connect(add_box)
-        row_global.addWidget(btn_plus)
-        hv.addLayout(row_global)
+        self.set_advanced_widget(wrap)
 
-        # Filtros por coluna (modo + multiseleção)
-        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
-        self.filters_host = QW(); self.filters_grid = QGridLayout(self.filters_host)
-        self.filters_grid.setContentsMargins(12,12,12,12); self.filters_grid.setHorizontalSpacing(14); self.filters_grid.setVerticalSpacing(8)
-        self.scroll.setWidget(self.filters_host)
-        hv.addWidget(self.scroll)
+    def _build_tabs(self):
+        self._tab_consolidado = self._make_table()
+        self.add_unique_tab("consolidado", "Consolidado", self._wrap_table(self._tab_consolidado))
 
-        root.addWidget(header)
+    def _wrap_table(self, tbl: QTableWidget) -> QWidget:
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(4,4,4,4)
+        v.addWidget(self._progress)
+        v.addWidget(tbl, 1)
+        return w
 
-        # Tabela
-        table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
-        tv = QVBoxLayout(table_card)
-        self.tabela = QTableWidget()
-        self.tabela.setAlternatingRowColors(True)
-        self.tabela.setSortingEnabled(True)
-        self.tabela.horizontalHeader().setSortIndicatorShown(True)
-        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.tabela.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        tv.addWidget(self.tabela)
-        root.addWidget(table_card)
+    def _make_table(self) -> QTableWidget:
+        t = QTableWidget()
+        t.setAlternatingRowColors(True)
+        t.setSortingEnabled(True)
+        t.horizontalHeader().setSortIndicatorShown(True)
+        t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        t.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        return t
 
-        # Watcher para recarregar quando editar a planilha
-        self.watcher = QFileSystemWatcher()
-        if os.path.exists(self.path): self.watcher.addPath(self.path)
-        self.watcher.fileChanged.connect(lambda _p: QTimer.singleShot(400, self.recarregar))
+    # ---------- DADOS / THREADS ----------
 
-        # Carregar dados
-        self.carregar_dados(self.path)
-        self.showMaximized()
+    def _generate(self):
+        self._progress.show()
+        self.set_footer_stats("Gerando…", "", "")
 
-    def _abrir_arquivo(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
-        if p:
-            self.path = p
+        key, d1, d2 = self.get_period()
+
+        def load_det():
+            df = load_df(DETALHAMENTO_PATH, dtype=str, normalize_cols=False)
+            for c in df.columns:
+                if "DATA" in str(c).upper():
+                    df[c] = ensure_datetime(df[c])
+            return df
+
+        def load_extrato_geral():
+            df = load_df(EXTRATO_GERAL_PATH, dtype=str, normalize_cols=False)
+            for c in df.columns:
+                if "DATA" in str(c).upper():
+                    df[c] = ensure_datetime(df[c])
+            return df
+
+        def load_extrato_simplificado():
+            df = load_df(EXTRATO_SIMPLIFICADO_PATH, dtype=str, normalize_cols=False)
+            for c in df.columns:
+                if "DATA" in str(c).upper():
+                    df[c] = ensure_datetime(df[c])
+            return df
+
+        def load_condutor_identificado():
             try:
-                self.watcher.removePath(self.path)
+                df = load_df(CONDUTOR_IDENTIFICADO_PATH, dtype=str, normalize_cols=False)
+                for c in df.columns:
+                    if "DATA" in str(c).upper():
+                        df[c] = ensure_datetime(df[c])
+                return df
             except Exception:
-                pass
-            if os.path.exists(self.path):
-                self.watcher.addPath(self.path)
-            self.carregar_dados(self.path)
+                return pd.DataFrame()
 
-    def carregar_dados(self, caminho):
-        if not caminho:
+        tasks = {
+            "DETALHAMENTO": load_det,
+            "EXTRATO_GERAL": load_extrato_geral,
+            "EXTRATO_SIMPLIFICADO": load_extrato_simplificado,
+            "CONDUTOR_IDENTIFICADO": load_condutor_identificado,
+        }
+
+        results: Dict[str, pd.DataFrame] = {}
+        def on_result(name, res):
+            results[name] = res
+
+        run_tasks(tasks, max_workers=4, on_result=on_result)
+
+        # período & status
+        merged = []
+        for name, df in results.items():
+            if isinstance(df, Exception) or df is None or df.empty:
+                continue
+            cols_upper = [str(c) for c in df.columns]
+            date_col = self._pick_date_col(cols_upper)
+            if date_col:
+                df = apply_period(df, date_col, d1, d2)
+            df = prepare_status_hex(df, status_col="STATUS")
+            df["FONTE"] = name
+            merged.append(df)
+
+        self._df_sources = results
+        self._df_merged = pd.concat(merged, ignore_index=True, sort=False) if merged else pd.DataFrame()
+
+        self._feed_filters_from_df(self._df_merged)
+        self._apply_filters()
+        self._progress.hide()
+
+    def _pick_date_col(self, cols: List[str]) -> Optional[str]:
+        pref = ["DATA", "DATA EMISSAO", "EMISSAO", "LANÇAMENTO", "LANCAMENTO", "DATA REFERENCIA", "DATA REFERÊNCIA"]
+        candidates = [c for c in cols if any(k in str(c).upper() for k in pref)]
+        return candidates[0] if candidates else None
+
+    # ---------- FILTROS ----------
+
+    def _feed_filters_from_df(self, df: pd.DataFrame):
+        if df is None or df.empty:
+            self._cmb_cols_filter.set_values([])
             return
-        ext = os.path.splitext(caminho)[1].lower()
-        try:
-            if ext in (".xlsx",".xls"):
-                df = pd.read_excel(caminho, dtype=str).fillna("")
-            elif ext == ".csv":
-                try:
-                    df = pd.read_csv(caminho, dtype=str, encoding="utf-8").fillna("")
-                except UnicodeDecodeError:
-                    df = pd.read_csv(caminho, dtype=str, encoding="latin1").fillna("")
-            else:
-                QMessageBox.warning(self, "Aviso", "Formato não suportado.")
-                return
-        except Exception as e:
-            QMessageBox.critical(self, "Erro ao carregar", str(e))
+        cols = [c for c in df.columns if df[c].dtype == object and str(c).upper() not in ("FONTE", "_STATUS_COLOR_HEX_")]
+        self._cmb_cols_filter.set_values(cols)
+
+    def _apply_filters(self):
+        df = self._df_merged.copy()
+
+        # Status
+        sel_status = set(s.upper() for s in self._cmb_status.selected_values())
+        if sel_status and "STATUS" in df.columns:
+            df = df[df["STATUS"].astype(str).str.upper().isin(sel_status)]
+
+        # Busca global (todas as colunas string)
+        terms = self._search.values()
+        if terms:
+            df = self._search_all_cols(df, terms)
+
+        self._fill_table(self._tab_consolidado, df)
+
+        total = len(self._df_merged)
+        vis = len(df)
+        self.set_footer_stats(f"Total: {total}", f"Visíveis: {vis}", "")
+
+    def _search_all_cols(self, df: pd.DataFrame, texts: List[str]) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        s_df = df.fillna("").astype(str)
+        mask = pd.Series(True, index=s_df.index)
+        for text in texts:
+            q = normalize_text(text).lower()
+            if not q:
+                continue
+            toks = [t for t in q.split(" ") if t]
+            m_box = pd.Series(True, index=s_df.index)
+            for tok in toks:
+                m_tok = pd.Series(False, index=s_df.index)
+                for c in s_df.columns:
+                    m_tok |= s_df[c].str.lower().str.contains(tok, na=False)
+                m_box &= m_tok
+            mask &= m_box
+        return df[mask].copy()
+
+    # ---------- RENDER ----------
+
+    def _fill_table(self, tbl: QTableWidget, df: pd.DataFrame):
+        tbl.clear()
+        if df is None or df.empty:
+            tbl.setRowCount(0); tbl.setColumnCount(0)
             return
 
-        self.df_original = ensure_status_cols(df)
-        self.df_filtrado = self.df_original.copy()
-        self._montar_filtros()
-        self.preencher_tabela(self.df_filtrado)
+        cols = [str(c) for c in df.columns]
+        tbl.setColumnCount(len(cols))
+        tbl.setHorizontalHeaderLabels(cols)
+        tbl.setRowCount(len(df))
 
-    def _montar_filtros(self):
-        # Limpa grid
-        while self.filters_grid.count():
-            item = self.filters_grid.takeAt(0)
-            w = item.widget()
-            if w: w.setParent(None)
-        self.mode_filtros.clear()
-        self.multi_filtros.clear()
+        for i in range(len(df)):
+            for j, c in enumerate(cols):
+                val = df.iat[i, j]
+                it = QTableWidgetItem("" if pd.isna(val) else str(val))
+                it.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                tbl.setItem(i, j, it)
 
-        cols = list(self.df_original.columns)
-        for i, coluna in enumerate(cols):
-            wrap = QFrame(); v = QVBoxLayout(wrap)
-            label = QLabel(coluna); label.setObjectName("colTitle"); label.setWordWrap(True); label.setMaximumWidth(self.max_pix)
+        tbl.resizeColumnsToContents()
+        tbl.resizeRowsToContents()
 
-            line1 = QHBoxLayout()
-            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"]); mode.currentTextChanged.connect(self.atualizar_filtro)
-            ms = CheckableComboBox(self.df_original[coluna].dropna().astype(str).unique()); ms.changed.connect(self.atualizar_filtro)
-            line1.addWidget(mode); line1.addWidget(ms)
+    # ---------- EXPORT ----------
 
-            v.addWidget(label); v.addLayout(line1)
-            self.filters_grid.addWidget(wrap, i//3, i%3)
-            self.mode_filtros[coluna] = mode
-            self.multi_filtros[coluna] = ms
+    def _export_csv(self):
+        if self._tab_consolidado.rowCount() == 0:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Salvar CSV", "relatorio.csv", "CSV (*.csv)")
+        if not path:
+            return
+        df = self._grab_df_from_table(self._tab_consolidado)
+        export_to_csv(df, path)
 
-    def recarregar(self):
-        self.carregar_dados(self.path)
+    def _export_xlsx(self):
+        if self._tab_consolidado.rowCount() == 0:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Salvar Excel", "relatorio.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        df = self._grab_df_from_table(self._tab_consolidado)
+        export_to_excel(df, path, sheet_name="Relatorio")
 
-    def limpar_filtros(self):
-        for le in self.global_boxes:
-            le.blockSignals(True); le.clear(); le.blockSignals(False)
-        for mode in self.mode_filtros.values():
-            mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
-        for ms in self.multi_filtros.values():
-            vals = [ms.itemText(i) for i in range(ms.count())]
-            ms.set_values(vals)
-        self.atualizar_filtro()
+    def _grab_df_from_table(self, tbl: QTableWidget) -> pd.DataFrame:
+        cols = [tbl.horizontalHeaderItem(j).text() for j in range(tbl.columnCount())]
+        data = []
+        for i in range(tbl.rowCount()):
+            row = []
+            for j in range(tbl.columnCount()):
+                it = tbl.item(i, j)
+                row.append("" if it is None else it.text())
+            data.append(row)
+        return pd.DataFrame(data, columns=cols)
 
-    def atualizar_filtro(self):
-        df = self.df_original.copy()
 
-        # Global: todas as colunas, pode ter várias caixas (+)
-        texts = [le.text() for le in self.global_boxes if le.text().strip()]
-        df = df_apply_global_texts(df, texts)
-
-        # Por coluna: modo + multiseleção
-        for coluna in df.columns:
-            mode = self.mode_filtros[coluna].currentText()
-            if mode == "Excluir vazios":
-                df = df[df[coluna].astype(str).str.strip() != ""]
-            elif mode == "Somente vazios":
-                df = df[df[coluna].astype(str).str.strip() == ""]
-            sels = [s for s in self.multi_filtros[coluna].selected_values() if s]
-            if sels:
-                df = df[df[coluna].astype(str).isin(sels)]
-
-        self.df_filtrado = df
-        self.preencher_tabela(self.df_filtrado)
-
-        # Atualiza os combos com valores do recorte atual (mantém seleção)
-        for coluna in self.df_filtrado.columns:
-            ms = self.multi_filtros[coluna]
-            current_sel = ms.selected_values()
-            ms.set_values(self.df_filtrado[coluna].dropna().astype(str).unique())
-            # restaura seleção anterior
-            if current_sel:
-                for i in range(ms.count()):
-                    if ms.itemText(i) in current_sel:
-                        idx = ms.model().index(i, 0)
-                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
-                ms._update_text()
-
-    def preencher_tabela(self, df):
-        headers = list(df.columns)
-        self.tabela.clear()
-        self.tabela.setColumnCount(len(headers))
-        self.tabela.setHorizontalHeaderLabels(headers)
-        self.tabela.setRowCount(len(df))
-
-        for i, (_, r) in enumerate(df.iterrows()):
-            for j, col in enumerate(headers):
-                val = "" if pd.isna(r[col]) else str(r[col])
-                it = QTableWidgetItem(val)
-                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                # se for coluna STATUS (comum em várias bases), aplicar cor
-                if col.upper() == "STATUS":
-                    st = val.strip()
-                    if st in STATUS_COLOR:
-                        bg = STATUS_COLOR[st]
-                        it.setBackground(bg)
-                        yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114)/1000
-                        it.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
-                self.tabela.setItem(i, j, it)
-
-        self.tabela.resizeColumnsToContents()
-        self.tabela.horizontalHeader().setStretchLastSection(True)
-        self.tabela.resizeRowsToContents()
-
-    def exportar_excel(self):
-        try:
-            out = os.path.splitext(os.path.basename(self.path))[0] + "_filtrado.xlsx"
-            self.df_filtrado.to_excel(out, index=False)
-            QMessageBox.information(self, "Exportado", f"{out} criado.")
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
+def build_relatorios_view() -> RelatoriosView:
+    return RelatoriosView()

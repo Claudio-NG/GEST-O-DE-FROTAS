@@ -1,14 +1,14 @@
 {
-  "geral_multas_csv": "GERAL_MULTAS.csv",
-  "multas_root": "T:\\Veiculos\\VEÍCULOS - RN\\MULTAS",
-  "detalhamento_path": "Notificações de Multas - Detalhamento.xlsx",
-  "pastores_file": "Notificações de Multas - Fase Pastores.xlsx",
-  "pastores_dir": "T:\\Veiculos\\VEÍCULOS - RN\\CPO-VEÍCULOS",
-  "extrato_geral_path": "ExtratoGeral.xlsx",
-  "extrato_simplificado_path": "ExtratoSimplificado.xlsx",
-  "users_file": "users.csv",
   "remember_user": "clnogueira@universal.org",
   "remember_pwd": "MTIz",
   "remember_flag": "1",
-  "condutor_identificado_path": "Notificações de Multas - Condutor Identificado.xlsx"
+  "geral_multas_csv": "GERAL_MULTAS.csv",
+  "multas_root": "/Users/claudionogueira/Documentos/GestaoFrotas/Multas",
+  "pastores_dir": "/Users/claudionogueira/Documentos/GestaoFrotas/Pastores",
+  "detalhamento_path": "Notificações de Multas - Detalhamento.xlsx",
+  "pastores_file": "Notificações de Multas - Fase Pastores.xlsx",
+  "condutor_identificado_path": "Notificações de Multas - Condutor Identificado.xlsx",
+  "extrato_geral_path": "ExtratoGeral.xlsx",
+  "extrato_simplificado_path": "ExtratoSimplificado.xlsx",
+  "users_file": "users.csv"
 }

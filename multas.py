@@ -1,9 +1,4 @@
-# multas.py
-import os
-import re
-import shutil
-import pandas as pd
-
+import os, re, shutil, pandas as pd
 from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -13,22 +8,22 @@ from PyQt6.QtWidgets import (
     QDateEdit, QCompleter
 )
 
+from gestao_frota_single import (
+    DATE_FORMAT, DATE_COLS, STATUS_COLOR,
+    GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR, ORGAOS,
+    PORTUGUESE_MONTHS,
+    cfg_get, cfg_set, cfg_all
+)
 from utils import (
     ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible,
     build_multa_dir, _parse_dt_any, CheckableComboBox, SummaryDialog, ConferirFluigDialog
 )
-from constants import ORGAOS, DATE_FORMAT
-from config import cfg_get
 
-# ====== MUITO IMPORTANTE ======
-# Nesta tela, vamos TRATAR como datas SOMENTE estas três colunas:
-DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"]
 
-# E vamos OCULTAR/IGNORAR estas colunas na UI:
+DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"] 
+
 IGNORED_COLS = {"LANÇAMENTOS DE NFF", "VALIDAÇÃO", "CONCLUSÃO"}
 
-
-# ---------------------- DIALOGO: INSERIR ----------------------
 class InserirDialog(QDialog):
     def __init__(self, parent, prefill_fluig=None):
         super().__init__(parent)
@@ -134,7 +129,7 @@ class InserirDialog(QDialog):
         # MES/ANO a partir da Data Infração (opcional)
         try:
             dt = pd.to_datetime(row["Data Infração"].iloc[0], dayfirst=False)
-            from constants import PORTUGUESE_MONTHS
+    
             if "MES" in self.widgets:
                 self.widgets["MES"].setText(PORTUGUESE_MONTHS.get(dt.month, ""))
             if "ANO" in self.widgets:
@@ -142,7 +137,7 @@ class InserirDialog(QDialog):
         except:
             pass
 
-        # Preencher DATA INDICAÇÃO a partir de Data Limite, se existir
+        
         try:
             d2 = pd.to_datetime(row["Data Limite"].iloc[0], dayfirst=False)
             if "DATA INDICAÇÃO" in self.widgets and isinstance(self.widgets["DATA INDICAÇÃO"], tuple):
@@ -405,8 +400,49 @@ class ExcluirDialog(QDialog):
         self.accept()
 
 
+
+# --- no topo do multas.py (se já existir, mantenha) ---
+import os
+import re
+import pandas as pd
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QLabel, QScrollArea, QHBoxLayout, QComboBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
+)
+
+
+from utils import apply_shadow, ensure_status_cols, CheckableComboBox
+
+
+# ✅ só essas 3 datas contam para status/pintura
+DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"]
+
+# ✅ colunas que NÃO devem aparecer (nem em tabela, nem em filtros)
+IGNORED_COLS = {"LANÇAMENTO NFF", "VALIDACAO NFF", "CONCLUSAO"}
+
+
+def _paint_status(item: QTableWidgetItem, status: str):
+    st = (status or "").strip()
+    if not st:
+        return
+    if st in STATUS_COLOR:
+        bg = STATUS_COLOR[st]
+        item.setBackground(bg)
+        yiq = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000
+        item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
+
+
 # ---------------------- VIEW PRINCIPAL (GERAL) ----------------------
 class GeralMultasView(QWidget):
+    """
+    - 1 (um) campo de texto global que filtra TODAS as colunas.
+    - Para cada coluna, mantém SOMENTE os botões (modo vazios/cheios + multiseleção de valores).
+    - Colunas LANÇAMENTO NFF / VALIDACAO NFF / CONCLUSAO são ignoradas.
+    - Pintura de status só em: DATA INDICAÇÃO, BOLETO, SGU.
+    """
     def __init__(self, parent_for_edit=None):
         super().__init__()
         self.parent_for_edit = parent_for_edit
@@ -414,62 +450,73 @@ class GeralMultasView(QWidget):
         fm = QFontMetrics(self.font())
         self.max_pix = fm.horizontalAdvance("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
 
+        # carga
         df = pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna("")
         self.df_original = ensure_status_cols(df, csv_path=cfg_get("geral_multas_csv"))
 
+        # garantir coluna de comentário persistida
         if "COMENTARIO" not in self.df_original.columns:
             self.df_original["COMENTARIO"] = ""
             self.df_original.to_csv(cfg_get("geral_multas_csv"), index=False)
 
         self.df_filtrado = self.df_original.copy()
 
-        # Mostrar tudo que não é *_STATUS, EXCETO as colunas que você quer ignorar
+        # colunas visíveis: tudo que não é *_STATUS e não está ignorado
         self.cols_show = [c for c in self.df_original.columns if not c.endswith("_STATUS") and c not in IGNORED_COLS]
 
         root = QVBoxLayout(self)
 
-        # Cabeçalho
+        # ===== Cabeçalho =====
         header_card = QFrame(); header_card.setObjectName("card"); apply_shadow(header_card, radius=18)
         hv = QVBoxLayout(header_card)
+
         title = QLabel("Multas em Aberto")
         title.setFont(QFont("Arial", 18, weight=QFont.Weight.Bold))
         hv.addWidget(title)
 
-        # Filtros por coluna (UI sem as colunas ignoradas)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        inner = QWidget()
-        self.filtros_layout = QHBoxLayout(inner)
-        self.filtros_layout.setContentsMargins(0, 0, 0, 0)
-        self.filtros_layout.setSpacing(8)
-        self.mode_filtros = {}; self.multi_filtros = {}; self.text_filtros = {}
+        # ---- Campo ÚNICO de filtro global ----
+        sc_global = QScrollArea(); sc_global.setWidgetResizable(True)
+        wrap_g = QWidget(); rowg = QHBoxLayout(wrap_g)
+        rowg.addWidget(QLabel("Filtro global:"))
+        self.global_box = QLineEdit()
+        self.global_box.setPlaceholderText("Digite aqui para filtrar em TODAS as colunas…")
+        self.global_box.setMaximumWidth(self.max_pix)
+        self.global_box.textChanged.connect(self.atualizar_filtro)
+        rowg.addWidget(self.global_box, 1)
+        sc_global.setWidget(wrap_g)
+        hv.addWidget(sc_global)
+
+        # ---- Botões por coluna (modo + multiseleção) — sem texto por coluna ----
+        sc_seg = QScrollArea(); sc_seg.setWidgetResizable(True)
+        inner = QWidget(); hl = QHBoxLayout(inner); hl.setContentsMargins(0,0,0,0); hl.setSpacing(8)
+
+        self.mode_filtros = {}   # coluna -> QComboBox ("Todos/Excluir vazios/Somente vazios")
+        self.multi_filtros = {}  # coluna -> CheckableComboBox (valores únicos da coluna)
 
         for coluna in self.cols_show:
             box = QVBoxLayout()
-            label = QLabel(coluna); label.setObjectName("colTitle"); label.setWordWrap(True); label.setMaximumWidth(self.max_pix)
-            line1 = QHBoxLayout()
-            mode = QComboBox(); mode.addItems(["Todos", "Excluir vazios", "Somente vazios"]); mode.currentTextChanged.connect(self.atualizar_filtro)
-            ms = CheckableComboBox(self.df_original[coluna].dropna().astype(str).unique()); ms.changed.connect(self.atualizar_filtro)
-            line1.addWidget(mode); line1.addWidget(ms)
-            box.addWidget(label); box.addLayout(line1)
-            line2 = QVBoxLayout()
-            btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28)
-            row = QHBoxLayout(); row.addLayout(line2, 1); row.addWidget(btn_plus)
-            box.addLayout(row)
-            self.mode_filtros[coluna] = mode; self.multi_filtros[coluna] = ms; self.text_filtros[coluna] = []
-            self._add_text_row(coluna, line2)
-            btn_plus.clicked.connect(lambda _, c=coluna, l=line2: self._add_text_row(c, l))
-            self.filtros_layout.addLayout(box)
+            lbl = QLabel(coluna); lbl.setObjectName("colTitle"); lbl.setWordWrap(True); lbl.setMaximumWidth(self.max_pix)
+            box.addWidget(lbl)
 
-        scroll.setWidget(inner)
-        hv.addWidget(scroll)
+            line = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos", "Excluir vazios", "Somente vazios"])
+            mode.currentTextChanged.connect(self.atualizar_filtro)
+            ms = CheckableComboBox(self.df_original[coluna].dropna().astype(str).unique()); ms.changed.connect(self.atualizar_filtro)
+            line.addWidget(mode); line.addWidget(ms)
+            box.addLayout(line)
+
+            hl.addLayout(box)
+            self.mode_filtros[coluna] = mode
+            self.multi_filtros[coluna] = ms
+
+        sc_seg.setWidget(inner)
+        hv.addWidget(sc_seg)
         root.addWidget(header_card)
 
-        # Tabela
+        # ===== Tabela =====
         table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0, 0, 0, 80))
         tv = QVBoxLayout(table_card)
+
         self.tabela = QTableWidget()
         self.tabela.setAlternatingRowColors(True)
         self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -492,12 +539,9 @@ class GeralMultasView(QWidget):
         tv.addLayout(buttons)
         root.addWidget(table_card)
 
-        self.preencher_tabela(self.df_filtrado)
+        self.atualizar_filtro()  # render inicial
 
-    def _add_text_row(self, col, where):
-        le = QLineEdit(); le.setPlaceholderText(f"Filtrar {col}..."); le.setMaximumWidth(self.max_pix); le.textChanged.connect(self.atualizar_filtro)
-        self.text_filtros[col].append(le); where.addWidget(le)
-
+    # ===== ações =====
     def recarregar(self):
         df = pd.read_csv(cfg_get("geral_multas_csv"), dtype=str).fillna("")
         self.df_original = ensure_status_cols(df, csv_path=cfg_get("geral_multas_csv"))
@@ -510,80 +554,63 @@ class GeralMultasView(QWidget):
         self.atualizar_filtro()
 
     def mostrar_visao(self):
-        dlg = SummaryDialog(self.df_filtrado[self.cols_show])
-        dlg.exec()
+        from relatorios import SummaryDialog  # se você já tiver esse dialog
+        try:
+            dlg = SummaryDialog(self.df_filtrado[self.cols_show])
+            dlg.exec()
+        except Exception:
+            QMessageBox.information(self, "Visão Geral", "Resumo indisponível.")
 
     def limpar_filtros(self):
+        # limpa campo global
+        self.global_box.blockSignals(True); self.global_box.clear(); self.global_box.blockSignals(False)
+        # reset botões por coluna
         for mode in self.mode_filtros.values():
             mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
         for ms in self.multi_filtros.values():
             vals = [ms.itemText(i) for i in range(ms.count())]
             ms.set_values(vals)
-        for col, arr in self.text_filtros.items():
-            for i, le in enumerate(arr):
-                le.blockSignals(True)
-                if i == 0:
-                    le.clear()
-                else:
-                    le.setParent(None)
-            self.text_filtros[col] = [arr[0]]
-            arr[0].blockSignals(False)
         self.atualizar_filtro()
 
     def atualizar_filtro(self):
         df = self.df_original.copy()
-        # filtro “em aberto”: se houver STATUS, mantenha os que não são "Pago"
+
+        # mantém apenas "em aberto" se existir coluna STATUS geral
         if "STATUS" in df.columns:
             df = df[df["STATUS"].astype(str).str.lower() != "pago"]
 
+        # ---- filtro global (todas as colunas) ----
+        from utils import df_apply_global_texts
+        texts = [self.global_box.text()]
+        df = df_apply_global_texts(df, texts)
+
+        # ---- botões por coluna (modo + multiseleção) ----
         for coluna in self.cols_show:
+            # modo vazios/cheios
             mode = self.mode_filtros[coluna].currentText()
             if mode == "Excluir vazios":
-                df = df[df[coluna].astype(str) != ""]
+                df = df[df[coluna].astype(str).str.strip() != ""]
             elif mode == "Somente vazios":
-                df = df[df[coluna].astype(str) == ""]
+                df = df[df[coluna].astype(str).str.strip() == ""]
 
+            # multiseleção
             sels = [s for s in self.multi_filtros[coluna].selected_values() if s]
             if sels:
                 df = df[df[coluna].astype(str).isin(sels)]
 
-            termos = []
-            for le in self.text_filtros[coluna]:
-                t = le.text().strip()
-                if t:
-                    termos.append(t)
-            if termos:
-                s = df[coluna].astype(str).str.lower()
-                rgx = "|".join(re.escape(t.lower()) for t in termos)
-                df = df[s.str.contains(rgx, na=False)]
-
         self.df_filtrado = df
-
-        # atualizar opções dos combos após filtro
-        for col in self.cols_show:
-            ms = self.multi_filtros[col]
-            current_sel = ms.selected_values()
-            ms.set_values(self.df_filtrado[col].dropna().astype(str).unique())
-            if current_sel:
-                for i in range(ms.count()):
-                    if ms.itemText(i) in current_sel:
-                        idx = ms.model().index(i, 0)
-                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
-                ms._update_text()
-
         self.preencher_tabela(self.df_filtrado)
 
     def preencher_tabela(self, df):
-        # garantir coluna de comentário
+        # garantir COMENTARIO
         if "COMENTARIO" not in df.columns:
-            df = df.copy()
-            df["COMENTARIO"] = ""
+            df = df.copy(); df["COMENTARIO"] = ""
 
         show = df[self.cols_show].reset_index(drop=True)
         df_idx = df.reset_index(drop=True)
 
         self.tabela.clear()
-        self.tabela.setColumnCount(len(show.columns) + 1)  # +1 para coluna Ações
+        self.tabela.setColumnCount(len(show.columns) + 1)  # +1 Ações
         self.tabela.setRowCount(len(show))
         headers = [str(c) for c in show.columns] + ["Ações"]
         self.tabela.setHorizontalHeaderLabels(headers)
@@ -595,7 +622,7 @@ class GeralMultasView(QWidget):
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 it.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-                # pintar status SOMENTE para as três datas oficiais
+                # pintar status SOMENTE nas 3 datas oficiais
                 if col in DATE_COLS_MUL:
                     st = str(df_idx.iloc[i].get(f"{col}_STATUS", ""))
                     _paint_status(it, st)
@@ -607,7 +634,8 @@ class GeralMultasView(QWidget):
             btn_comment = QPushButton("Comentar")
             if "COMENTARIO" in df_idx.columns:
                 btn_comment.setToolTip(str(df_idx.iloc[i].get("COMENTARIO", "")).strip())
-            btn_comment.clicked.connect(lambda _, k=key: self.parent_for_edit.comentar_with_key(k))
+            if self.parent_for_edit:
+                btn_comment.clicked.connect(lambda _, k=key: self.parent_for_edit.comentar_with_key(k))
             self.tabela.setCellWidget(i, len(show.columns), btn_comment)
 
         self.tabela.resizeColumnsToContents()

@@ -3,83 +3,127 @@ from decimal import Decimal
 import pandas as pd
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QPushButton, QComboBox, QLabel, QGridLayout, QMessageBox
-from constants import PORTUGUESE_MONTHS
-from utils import apply_shadow
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
 )
+
+from gestao_frota_single import PORTUGUESE_MONTHS, DATE_FORMAT, cfg_get, cfg_set, cfg_all
 from utils import apply_shadow, CheckableComboBox
 
-
 class CombustivelWindow(QWidget):
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Combustível")
         self.resize(1280, 900)
-        self.path_geral = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoGeral.xlsx"
-        self.path_simplificado = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoSimplificado.xlsx"
-        self.cat_cols = ["DATA TRANSACAO","PLACA","MODELO VEICULO","NOME MOTORISTA","TIPO COMBUSTIVEL","NOME ESTABELECIMENTO","RESPONSAVEL"]
-        self.num_cols = ["LITROS","VL/LITRO","HODOMETRO OU HORIMETRO","KM RODADOS OU HORAS TRABALHADAS","KM/LITRO OU LITROS/HORA","VALOR EMISSAO"]
+
+        default_geral = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoGeral.xlsx"
+        default_simpl = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoSimplificado.xlsx"
+        self.path_geral = cfg_get("extrato_geral_path") or default_geral
+        self.path_simplificado = cfg_get("extrato_simplificado_path") or default_simpl
+
+        self.cat_cols = [
+            "DATA TRANSACAO","PLACA","MODELO VEICULO","NOME MOTORISTA",
+            "TIPO COMBUSTIVEL","NOME ESTABELECIMENTO","RESPONSAVEL"
+        ]
+        self.num_cols = [
+            "LITROS","VL/LITRO","HODOMETRO OU HORIMETRO",
+            "KM RODADOS OU HORAS TRABALHADAS","KM/LITRO OU LITROS/HORA","VALOR EMISSAO"
+        ]
+        import pandas as pd
         self.df_original = pd.DataFrame(columns=self.cat_cols + self.num_cols)
         self.df_filtrado = self.df_original.copy()
         self.df_limites = pd.DataFrame()
-        self.tot_limites = {"LIMITE ATUAL":0.0,"COMPRAS (UTILIZADO)":0.0,"SALDO":0.0,"LIMITE PRÓXIMO PERÍODO":0.0}
+        self.tot_limites = {
+            "LIMITE ATUAL":0.0,"COMPRAS (UTILIZADO)":0.0,"SALDO":0.0,"LIMITE PRÓXIMO PERÍODO":0.0
+        }
         self.filters = {}
         self.kpi_vals = {}
         self.kpi_dual = {}
         self.fit_targets = []
+
+        # ===== UI original (sem mudanças estruturais) =====
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton,
+            QGridLayout, QScrollArea
+        )
+        from PyQt6.QtGui import QColor, QFont
+        from PyQt6.QtCore import Qt
         root = QVBoxLayout(self)
+
         header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
         hv = QVBoxLayout(header)
         tools = QHBoxLayout()
-        self.btn_reload = QPushButton("Recarregar"); self.btn_reload.clicked.connect(self.recarregar)
-        self.btn_clear = QPushButton("Limpar Filtros"); self.btn_clear.clicked.connect(self.limpar_filtros)
-        tools.addWidget(self.btn_reload); tools.addStretch(1); tools.addWidget(self.btn_clear)
+
+        self.btn_reload = QPushButton("Recarregar")
+        self.btn_reload.clicked.connect(self.recarregar)
+
+        self.btn_clear = QPushButton("Limpar Filtros")
+        self.btn_clear.clicked.connect(self.limpar_filtros)
+
+        # Botão opcional para trocar caminhos na hora (salva na base.json)
+        btn_paths = QPushButton("Definir Arquivos…")
+        btn_paths.clicked.connect(self._definir_arquivos)
+
+        tools.addWidget(self.btn_reload)
+        tools.addStretch(1)
+        tools.addWidget(btn_paths)
+        tools.addWidget(self.btn_clear)
         hv.addLayout(tools)
+
+        # Barra de período (original)
+        self.cb_periodo = QComboBox(); self.cb_periodo.addItem("Todos")
+        self.cb_periodo.currentTextChanged.connect(lambda _: self._on_time_combo("periodo"))
+        self.cb_mes = QComboBox(); self.cb_mes.addItem("Todos")
+        self.cb_mes.currentTextChanged.connect(lambda _: self._on_time_combo("mes"))
+        self.cb_ano = QComboBox(); self.cb_ano.addItem("Todos")
+        self.cb_ano.currentTextChanged.connect(lambda _: self._on_time_combo("ano"))
+
         timebar = QHBoxLayout()
-        self.cb_periodo = QComboBox(); self.cb_periodo.addItem("Todos"); self.cb_periodo.currentTextChanged.connect(lambda _: self._on_time_combo("periodo"))
-        self.cb_mes = QComboBox(); self.cb_mes.addItem("Todos"); self.cb_mes.currentTextChanged.connect(lambda _: self._on_time_combo("mes"))
-        self.cb_ano = QComboBox(); self.cb_ano.addItem("Todos"); self.cb_ano.currentTextChanged.connect(lambda _: self._on_time_combo("ano"))
         timebar.addWidget(QLabel("Período")); timebar.addWidget(self.cb_periodo)
         timebar.addSpacing(16)
         timebar.addWidget(QLabel("Mês")); timebar.addWidget(self.cb_mes)
         timebar.addSpacing(16)
         timebar.addWidget(QLabel("Ano")); timebar.addWidget(self.cb_ano)
         hv.addLayout(timebar)
-        self.filters_layout = QGridLayout()
-        for i,col in enumerate(self.cat_cols):
+
+        # Filtros categóricos (original)
+        from PyQt6.QtWidgets import QLineEdit
+        grid = QGridLayout()
+        for i, col in enumerate(self.cat_cols):
             box = QVBoxLayout()
             lab = QLabel(col); lab.setObjectName("colTitle")
             cb = QComboBox(); cb.addItem("Todos"); cb.currentTextChanged.connect(self.atualizar_filtro)
             self.filters[col] = cb
-            box.addWidget(lab); box.addWidget(cb)
-            self.filters_layout.addLayout(box, i//4, i%4)
-        hv.addLayout(self.filters_layout)
+            from PyQt6.QtWidgets import QWidget as _QW
+            wrap = _QW(); inner = QVBoxLayout(wrap); inner.addWidget(lab); inner.addWidget(cb)
+            grid.addWidget(wrap, i//4, i%4)
+        hv.addLayout(grid)
+
         root.addWidget(header)
-        grid_top = QFrame(); grid_top.setObjectName("glass"); apply_shadow(grid_top, radius=18, blur=60, color=QColor(0,0,0,80))
-        gv1 = QGridLayout(grid_top)
-        k1 = self._make_kpi("LITROS"); self.kpi_vals["LITROS"] = k1.findChild(QLabel, "val")
-        k2 = self._make_kpi("VL/LITRO"); self.kpi_vals["VL/LITRO"] = k2.findChild(QLabel, "val")
-        k3 = self._make_kpi("HODOMETRO OU HORIMETRO"); self.kpi_vals["HODOMETRO OU HORIMETRO"] = k3.findChild(QLabel, "val")
-        k4 = self._make_kpi("KM RODADOS OU HORAS TRABALHADAS"); self.kpi_vals["KM RODADOS OU HORAS TRABALHADAS"] = k4.findChild(QLabel, "val")
-        k5 = self._make_kpi("KM/LITRO OU LITROS/HORA"); self.kpi_vals["KM/LITRO OU LITROS/HORA"] = k5.findChild(QLabel, "val")
-        k6 = self._make_kpi("VALOR EMISSAO"); self.kpi_vals["VALOR EMISSAO"] = k6.findChild(QLabel, "val")
-        for i,c in enumerate([k1,k2,k3,k4,k5,k6]):
-            gv1.addWidget(c, i//3, i%3)
-        root.addWidget(grid_top)
-        grid_bottom = QFrame(); grid_bottom.setObjectName("glass"); apply_shadow(grid_bottom, radius=18, blur=60, color=QColor(0,0,0,80))
-        gv2 = QGridLayout(grid_bottom)
-        d1 = self._make_kpi_dual("LIMITE ATUAL", True); self.kpi_dual["LIMITE ATUAL"] = d1
-        d2 = self._make_kpi_dual("COMPRAS (UTILIZADO)", True); self.kpi_dual["COMPRAS (UTILIZADO)"] = d2
-        d3 = self._make_kpi_dual("SALDO", True); self.kpi_dual["SALDO"] = d3
-        d4 = self._make_kpi_dual("LIMITE PRÓXIMO PERÍODO", True); self.kpi_dual["LIMITE PRÓXIMO PERÍODO"] = d4
-        for i,c in enumerate([d1,d2,d3,d4]):
-            gv2.addWidget(c["frame"], i//2, i%2)
-        root.addWidget(grid_bottom)
+
         self.recarregar()
+
+
+    def _definir_arquivos(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        # Extrato Geral
+        p1, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Geral", "", "Planilhas (*.xlsx *.xls)")
+        if p1:
+            self.path_geral = p1
+            cfg_set("extrato_geral_path", p1)  # persiste no base.json
+        # Extrato Simplificado
+        p2, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Simplificado", "", "Planilhas (*.xlsx *.xls)")
+        if p2:
+            self.path_simplificado = p2
+            cfg_set("extrato_simplificado_path", p2)
+        if p1 or p2:
+            QMessageBox.information(self, "Configuração salva", "Caminhos atualizados.")
+            self.recarregar()
+
+
+
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -360,8 +404,29 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout
 )
 from utils import apply_shadow
-from constants import DATE_FORMAT
-from config import cfg_get
+
+import os, re
+from decimal import Decimal
+import pandas as pd
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
+)
+
+from utils import apply_shadow, CheckableComboBox
+
+# >>> mudou aqui
+from gestao_frota_single import PORTUGUESE_MONTHS, cfg_get
+
+# SUBSTITUA:
+# from constants import ...
+# from config import cfg_get
+
+# POR:
+from gestao_frota_single import DATE_FORMAT, cfg_get, cfg_set, cfg_all
+
 
 def _dt_parse_any(s):
     s = str(s).strip()

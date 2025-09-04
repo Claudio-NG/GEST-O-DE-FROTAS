@@ -10,11 +10,47 @@ from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QWidget
 )
 
-from constants import DATE_COLS, STATUS_COLOR, GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR
 
-# =============================================================================
-# UI: ComboBox com seleção múltipla (antes duplicada)
-# =============================================================================
+import re
+import pandas as pd
+from gestao_frota_single import DATE_COLS, STATUS_COLOR, GERAL_MULTAS_CSV, MULTAS_ROOT, PASTORES_DIR, cfg_get, cfg_set
+
+def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
+    """
+    Aplica filtro 'contém' em TODAS as colunas (case-insensitive).
+    - texts: lista com 1+ caixas (no seu caso, só 1). Cada caixa pode ter vários tokens separados por espaço.
+    - Para cada caixa: TODOS os tokens precisam aparecer (AND) em ALGUMA coluna (OR entre colunas).
+    - Se texts estiver vazio, retorna df sem alterações.
+    """
+    if df is None or df.empty:
+        return df
+
+    s_df = df.fillna("").astype(str).apply(lambda col: col.str.lower())
+    mask_total = pd.Series(True, index=df.index)
+
+    for text in texts:
+        q = (text or "").strip().lower()
+        if not q:
+            continue
+        tokens = [t for t in re.split(r"\s+", q) if t]
+        if not tokens:
+            continue
+
+        # Para esta caixa, todos tokens (AND) devem ser verdadeiros em OR de colunas
+        mask_box = pd.Series(True, index=df.index)
+        for tok in tokens:
+            m_tok = pd.Series(False, index=df.index)
+            pat = re.escape(tok)
+            for c in s_df.columns:
+                m_tok |= s_df[c].str.contains(pat, na=False)
+            mask_box &= m_tok
+
+        mask_total &= mask_box
+
+    return df[mask_total].copy()
+
+
+
 class CheckableComboBox(QComboBox):
     changed = pyqtSignal()
     def __init__(self, values):

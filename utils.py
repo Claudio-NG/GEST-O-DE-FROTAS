@@ -478,3 +478,163 @@ class AlertasDialog(QDialog):
         v.addWidget(card)
         close = QPushButton("Fechar"); close.clicked.connect(self.accept)
         v.addWidget(close)
+
+# === utils.py (ACRESCENTAR AO FINAL DO ARQUIVO) =================================
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QLabel, QVBoxLayout
+from PyQt6.QtCore import pyqtSignal, Qt
+import pandas as pd
+import re as _re
+
+class GlobalFilterBar(QFrame):
+    """
+    Barra de filtro global padronizada:
+      - 1ª caixa fixa
+      - Botão [+] adiciona novas caixas
+      - Caixas adicionais somem automaticamente quando ficam vazias
+      - Emite 'changed' quando qualquer caixa muda
+    """
+    changed = pyqtSignal(list)  # lista de textos
+
+    def __init__(self, title: str = "Filtro global:"):
+        super().__init__()
+        self.setObjectName("card")
+        apply_shadow(self, radius=14)
+        self._edits: list[QLineEdit] = []
+
+        root = QHBoxLayout(self)
+        self._lab = QLabel(title)
+        root.addWidget(self._lab)
+
+        # primeira caixa (fixa)
+        self._add_box(fixed=True)
+
+        # botão +
+        self._btn_add = QPushButton("+")
+        self._btn_add.setFixedWidth(28)
+        self._btn_add.clicked.connect(self._handle_add)
+        root.addWidget(self._btn_add)
+        root.addStretch(1)
+
+    def _handle_add(self):
+        self._add_box(fixed=False)
+
+    def _add_box(self, fixed: bool):
+        ed = QLineEdit()
+        ed.setPlaceholderText("Digite para filtrar em TODAS as colunas…")
+        ed.textChanged.connect(lambda _=None, ed_=ed, fixed_=fixed: self._on_change(ed_, fixed_))
+        self.layout().insertWidget(self.layout().count()-2, ed, 1)
+        self._edits.append(ed)
+
+    def _on_change(self, ed: QLineEdit, fixed: bool):
+        # se não for a primeira e ficou vazio -> remover
+        if not fixed and ed.text().strip() == "":
+            try:
+                self._edits.remove(ed)
+            except ValueError:
+                pass
+            ed.setParent(None)
+            ed.deleteLater()
+        self.changed.emit(self.values())
+
+    def values(self) -> list[str]:
+        return [e.text().strip() for e in self._edits if e.text().strip()]
+
+def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
+    
+    if df is None or df.empty or not texts:
+        return df
+    s_df = df.fillna("").astype(str).apply(lambda col: col.str.lower())
+    mask_total = pd.Series(True, index=df.index)
+    for text in texts:
+        q = (text or "").strip().lower()
+        if not q:
+            continue
+        tokens = [t for t in _re.split(r"\s+", q) if t]
+        if not tokens:
+            continue
+        mask_box = pd.Series(True, index=df.index)
+        for tok in tokens:
+            m_tok = pd.Series(False, index=df.index)
+            pat = _re.escape(tok)
+            for c in s_df.columns:
+                m_tok |= s_df[c].str.contains(pat, na=False)
+            mask_box &= m_tok
+        mask_total &= mask_box
+    return df[mask_total].copy()
+
+
+# === utils.py (ACRESCENTAR AO FINAL) =================================
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QLabel
+from PyQt6.QtCore import pyqtSignal, Qt
+import pandas as pd
+import re as _re
+
+class GlobalFilterBar(QFrame):
+    changed = pyqtSignal(list)  # lista de textos
+
+    def __init__(self, title: str = "Filtro global:"):
+        super().__init__()
+        self.setObjectName("card")
+        apply_shadow(self, radius=14)
+        self._edits: list[QLineEdit] = []
+
+        root = QHBoxLayout(self)
+        self._lab = QLabel(title)
+        root.addWidget(self._lab)
+
+        # primeira caixa (fixa)
+        self._add_box(fixed=True)
+
+        # botão +
+        self._btn_add = QPushButton("+")
+        self._btn_add.setFixedWidth(28)
+        self._btn_add.clicked.connect(self._handle_add)
+        root.addWidget(self._btn_add)
+        root.addStretch(1)
+
+    def _handle_add(self):
+        self._add_box(fixed=False)
+
+    def _add_box(self, fixed: bool):
+        ed = QLineEdit()
+        ed.setPlaceholderText("Digite para filtrar em TODAS as colunas…")
+        ed.textChanged.connect(lambda _=None, ed_=ed, fixed_=fixed: self._on_change(ed_, fixed_))
+        self.layout().insertWidget(self.layout().count()-2, ed, 1)
+        self._edits.append(ed)
+
+    def _on_change(self, ed: QLineEdit, fixed: bool):
+        # se não for a primeira e ficou vazio -> remover
+        if not fixed and ed.text().strip() == "":
+            try:
+                self._edits.remove(ed)
+            except ValueError:
+                pass
+            ed.setParent(None)
+            ed.deleteLater()
+        self.changed.emit(self.values())
+
+    def values(self) -> list[str]:
+        return [e.text().strip() for e in self._edits if e.text().strip()]
+
+def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
+    if df is None or df.empty or not texts:
+        return df
+    s_df = df.fillna("").astype(str).apply(lambda col: col.str.lower())
+    mask_total = pd.Series(True, index=df.index)
+    for text in texts:
+        q = (text or "").strip().lower()
+        if not q:
+            continue
+        tokens = [t for t in _re.split(r"\s+", q) if t]
+        if not tokens:
+            continue
+        mask_box = pd.Series(True, index=df.index)
+        for tok in tokens:
+            m_tok = pd.Series(False, index=df.index)
+            pat = _re.escape(tok)
+            for c in s_df.columns:
+                m_tok |= s_df[c].str.contains(pat, na=False)
+            mask_box &= m_tok
+        mask_total &= mask_box
+    return df[mask_total].copy()
+# === /utils.py ADDITIONS =======================================================

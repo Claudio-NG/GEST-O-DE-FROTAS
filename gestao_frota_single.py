@@ -302,6 +302,42 @@ def _paint_status(item: QTableWidgetItem, status: str):
         # contraste do texto
         yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114)/1000
         item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
+        
+        
+# --- multas.py (dentro de GeralMultasView) ---
+def apply_global_text_filter(self, texts: list[str]):
+    """
+    Aplica o filtro global (todas as colunas) e atualiza a grade.
+    """
+    from utils import df_apply_global_texts
+    import pandas as pd
+    if getattr(self, "df_base", None) is None or self.df_base.empty:
+        # tenta recarregar se você tiver algo como self.recarregar()
+        if hasattr(self, "recarregar"):
+            self.recarregar()
+        return
+    df = df_apply_global_texts(self.df_base.copy(), texts)
+    self.df_view = df  # guarda última visão filtrada, útil para exportar/relatórios
+
+    # ========= preencha a tabela =========
+    tbl = getattr(self, "table", None)
+    if tbl is None:
+        return
+    tbl.setRowCount(len(df))
+    # defina a ordem/nomes de colunas desejada aqui:
+    cols = list(df.columns)
+    tbl.setColumnCount(len(cols))
+    tbl.setHorizontalHeaderLabels(cols)
+    from PyQt6.QtWidgets import QTableWidgetItem
+    from PyQt6.QtCore import Qt
+    for i, (_, row) in enumerate(df.iterrows()):
+        for j, c in enumerate(cols):
+            it = QTableWidgetItem(str(row.get(c, "")))
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            tbl.setItem(i, j, it)
+    tbl.resizeColumnsToContents()
+    tbl.horizontalHeader().setStretchLastSection(True)
+
 
 def ensure_status_cols(df: pd.DataFrame, csv_path: str | None = None) -> pd.DataFrame:
     """
@@ -826,47 +862,548 @@ except Exception:
     except Exception:
         AlertsTab = None  # se não existir, mostramos aviso ao clicar
 
+# ===================== CONDUTOR (painel integrado) =====================
+class CondutorTab(QWidget):
+    """
+    Painel integrado por Condutor:
+      - Filtro global único (+ para mais caixas; vazias somem)
+      - Filtros segmentados (Responsável, Condutor, Placa)
+      - Período (datas e sliders)
+      - Abas: VISÃO GERAL | MULTAS | COMBUSTÍVEL
+      - Pontuação do motorista calculada pelo valor da multa
+    """
+    # ---------- Helpers numéricos/datas ----------
+    @staticmethod
+    def _to_num_brl(s):
+        import re
+        s = str(s).strip()
+        if not s:
+            return 0.0
+        s = re.sub(r"[^\d,.-]", "", s)
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
+        try: return float(s)
+        except: return 0.0
+
+    @staticmethod
+    def _dt_parse_any(s):
+        import pandas as pd
+        s = str(s).strip()
+        if not s:
+            return pd.NaT
+        for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return pd.to_datetime(s, format=fmt, dayfirst=True, errors="raise")
+            except Exception:
+                pass
+        return pd.to_datetime(s, dayfirst=True, errors="coerce")
+
+    @staticmethod
+    def _score(valor):
+        v = float(valor or 0)
+        if v >= 1000: return 5
+        if v >= 500: return 3
+        if v >= 200: return 2
+        return 1
+
+    # ---------- Construtor ----------
+    def __init__(self):
+        super().__init__()
+        from utils import apply_shadow, GlobalFilterBar  # já existentes no seu utils.py
+        from gestao_frota_single import cfg_get, DATE_FORMAT
+        self.apply_shadow = apply_shadow
+        self.GlobalFilterBar = GlobalFilterBar
+        self.cfg_get = cfg_get
+        self.DATE_FORMAT = DATE_FORMAT
+
+        self._load_data()          # carrega Multas + Combustível
+        self._build_ui()           # monta interface
+        self._apply_filters_all()  # popula com filtros iniciais
+
+    # ---------- Carga de dados ----------
+    def _load_data(self):
+        import os, pandas as pd
+
+        # Multas
+        multas_csv = self.cfg_get("geral_multas_csv")
+        if multas_csv and os.path.exists(multas_csv):
+            dm = pd.read_csv(multas_csv, dtype=str).fillna("")
+        else:
+            dm = pd.DataFrame()
+
+        # Normalizações básicas
+        if not dm.empty:
+            if "VALOR" not in dm.columns:
+                cand = [c for c in dm.columns if c.upper().strip() in ("VALOR MULTA","VALOR_MULTA","VALOR DA MULTA")]
+                dm["VALOR"] = dm[cand[0]] if cand else ""
+            dm["VALOR_NUM"] = dm["VALOR"].map(self._to_num_brl)
+            # Nome do motorista (INFRATOR ou NOME)
+            if "INFRATOR" in dm.columns:
+                dm["MOTORISTA_X"] = dm["INFRATOR"].astype(str)
+            elif "NOME" in dm.columns:
+                dm["MOTORISTA_X"] = dm["NOME"].astype(str)
+            else:
+                dm["MOTORISTA_X"] = ""
+            # Datas de ocorrência (pega a primeira disponível entre as oficiais)
+            for c in ["DATA DA INFRACAO","DATA INFRAÇÃO","DATA","DATA INDICAÇÃO"]:
+                if c in dm.columns:
+                    dm["DT_M"] = dm[c].map(self._dt_parse_any); break
+            if "DT_M" not in dm.columns:
+                dm["DT_M"] = pd.NaT
+        self.df_multas = dm
+
+        # Combustível — Extratos
+        p_geral = self.cfg_get("extrato_geral_path")
+        p_simpl = self.cfg_get("extrato_simplificado_path")
+        def _read_xls(path):
+            try:
+                return pd.read_excel(path, dtype=str).fillna("") if path and os.path.exists(path) else pd.DataFrame()
+            except Exception:
+                return pd.DataFrame()
+        dg = _read_xls(p_geral)
+        ds = _read_xls(p_simpl)
+
+        if not dg.empty:
+            m1 = {
+                "DATA TRANSACAO":"DATA_TRANSACAO","PLACA":"PLACA","NOME MOTORISTA":"MOTORISTA",
+                "TIPO COMBUSTIVEL":"COMBUSTIVEL","LITROS":"LITROS","VL/LITRO":"VL_LITRO",
+                "VALOR EMISSAO":"VALOR","NOME ESTABELECIMENTO":"ESTABELECIMENTO","CIDADE":"CIDADE",
+                "UF":"UF","CIDADE/UF":"CIDADE_UF","RESPONSAVEL":"RESPONSAVEL",
+                "KM RODADOS OU HORAS TRABALHADAS":"KM_RODADOS","KM/LITRO OU LITROS/HORA":"KM_POR_L",
+            }
+            use1 = {src: dst for src, dst in m1.items() if src in dg.columns}
+            dg = dg.rename(columns=use1)
+            if "CIDADE_UF" not in dg.columns:
+                dg["CIDADE_UF"] = dg.get("CIDADE","").astype(str).str.strip()+"/"+dg.get("UF","").astype(str).str.strip()
+            # números e datas
+            dg["DT_C"] = dg.get("DATA_TRANSACAO","").map(self._dt_parse_any)
+            for c_src, c_num in [("LITROS","LITROS_NUM"),("VL_LITRO","VL_LITRO_NUM"),("VALOR","VALOR_NUM"),
+                                 ("KM_RODADOS","KM_RODADOS_NUM"),("KM_POR_L","KM_POR_L_NUM")]:
+                dg[c_num] = dg.get(c_src, "").map(self._to_num_brl)
+        self.df_comb = dg if not dg.empty else pd.DataFrame()
+
+        if not ds.empty:
+            m2 = {"Placa":"PLACA","Nome Responsável":"RESPONSAVEL"}
+            ds = ds.rename(columns={k:v for k,v in m2.items() if k in ds.columns})
+        self.df_simpl = ds if not ds.empty else pd.DataFrame()
+
+        # universo de datas para régua
+        import pandas as pd
+        alls = []
+        if not self.df_multas.empty: alls += list(self.df_multas["DT_M"].dropna().dt.normalize().unique())
+        if not self.df_comb.empty:   alls += list(self.df_comb["DT_C"].dropna().dt.normalize().unique())
+        self._dates = sorted(set(alls))
+        today = pd.Timestamp.today().normalize()
+        self._dmin = min(self._dates) if self._dates else today
+        self._dmax = max(self._dates) if self._dates else today
+
+    # ---------- Interface ----------
+    def _build_ui(self):
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QFrame, QLabel, QHBoxLayout, QDateEdit, QSlider,
+            QComboBox, QTableWidget, QHeaderView, QWidget
+        )
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont, QColor
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12,12,12,12)
+
+        # Título
+        head = QFrame(); head.setObjectName("glass"); self.apply_shadow(head, radius=18, blur=60, color=QColor(0,0,0,60))
+        hv = QVBoxLayout(head); hv.setContentsMargins(18,18,18,18)
+        t = QLabel("Condutor — Painel Integrado"); t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setFont(QFont("Arial", 22, QFont.Weight.Bold))
+        hv.addWidget(t)
+        root.addWidget(head)
+
+        # Filtros principais (global + segmentados + período)
+        bar = QFrame(); bar.setObjectName("card"); self.apply_shadow(bar, radius=18)
+        bv = QVBoxLayout(bar); bv.setSpacing(8)
+
+        # Global (+)
+        from utils import GlobalFilterBar
+        self.global_bar = GlobalFilterBar("Filtro global:")
+        self.global_bar.changed.connect(self._apply_filters_all)
+        bv.addWidget(self.global_bar)
+
+        # Segmentados
+        seg = QHBoxLayout()
+        self.cb_resp  = QComboBox(); self.cb_resp.setEditable(False)
+        self.cb_cond  = QComboBox(); self.cb_cond.setEditable(False)
+        self.cb_placa = QComboBox(); self.cb_placa.setEditable(False)
+        for cb, lab in [(self.cb_resp,"Responsável"),(self.cb_cond,"Condutor"),(self.cb_placa,"Placa")]:
+            wrap = QFrame(); wv = QVBoxLayout(wrap); wv.setContentsMargins(0,0,0,0)
+            wv.addWidget(QLabel(lab)); wv.addWidget(cb)
+            seg.addWidget(wrap)
+        seg.addStretch(1)
+        for cb in (self.cb_resp, self.cb_cond, self.cb_placa):
+            cb.currentTextChanged.connect(self._apply_filters_all)
+        bv.addLayout(seg)
+
+        # Período (datas + sliders)
+        from gestao_frota_single import DATE_FORMAT
+        self.de_ini = QDateEdit(); self.de_fim = QDateEdit()
+        for de in (self.de_ini, self.de_fim):
+            de.setCalendarPopup(True); de.setDisplayFormat(DATE_FORMAT)
+        self.de_ini.setDate(self._to_qdate(self._dmin)); self.de_fim.setDate(self._to_qdate(self._dmax))
+        self.de_ini.dateChanged.connect(self._period_changed); self.de_fim.dateChanged.connect(self._period_changed)
+
+        self.sl_ini = QSlider(Qt.Orientation.Horizontal); self.sl_fim = QSlider(Qt.Orientation.Horizontal)
+        n = max(0, len(self._dates)-1)
+        for s in (self.sl_ini, self.sl_fim):
+            s.setMinimum(0); s.setMaximum(n); s.setTickInterval(1); s.setSingleStep(1); s.setPageStep(1)
+        self.sl_ini.setValue(0); self.sl_fim.setValue(n)
+        self.sl_ini.valueChanged.connect(self._sliders_changed); self.sl_fim.valueChanged.connect(self._sliders_changed)
+
+        per1 = QHBoxLayout(); per1.addWidget(QLabel("Início:")); per1.addWidget(self.de_ini); per1.addSpacing(10)
+        per1.addWidget(QLabel("Fim:")); per1.addWidget(self.de_fim); per1.addStretch(1)
+        per2 = QHBoxLayout(); per2.addWidget(self.sl_ini); per2.addSpacing(8); per2.addWidget(self.sl_fim)
+
+        bv.addLayout(per1); bv.addLayout(per2)
+        root.addWidget(bar)
+
+        # Abas
+        from PyQt6.QtWidgets import QTabWidget
+        self.tabs = QTabWidget(); root.addWidget(self.tabs, 1)
+
+        # VISÃO GERAL
+        self.tab_over = QWidget(); ov = QVBoxLayout(self.tab_over)
+        # KPIs
+        kcard = QFrame(); kcard.setObjectName("card"); self.apply_shadow(kcard, radius=18)
+        kl = QGridLayout(kcard)
+        self.kpi_multas = QLabel(); self.kpi_valor = QLabel(); self.kpi_score = QLabel()
+        self.kpi_litros = QLabel(); self.kpi_custo = QLabel()
+        for i, (lbl, val) in enumerate([("Qtd Multas", self.kpi_multas), ("Valor Multas (R$)", self.kpi_valor),
+                                        ("Pontuação", self.kpi_score), ("Litros", self.kpi_litros),
+                                        ("Custo Combustível (R$)", self.kpi_custo)]):
+            kl.addWidget(QLabel(lbl), 0, i)
+            v = val; v.setFont(QFont("Arial", 12, QFont.Weight.Bold)); kl.addWidget(v, 1, i)
+        ov.addWidget(kcard)
+
+        # Charts (matplotlib)
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+        self.fig1 = Figure(figsize=(4,2.8), tight_layout=True); self.cv1 = FigureCanvas(self.fig1)
+        self.fig2 = Figure(figsize=(4,2.8), tight_layout=True); self.cv2 = FigureCanvas(self.fig2)
+        ch = QHBoxLayout(); ch.addWidget(self.cv1, 1); ch.addWidget(self.cv2, 1)
+        ov.addLayout(ch)
+
+        # Tabelas-resumo
+        self.tbl_top_infracoes = QTableWidget(); self._prep(self.tbl_top_infracoes, ["Infração/Órgão","Qtd","Valor (R$)"])
+        self.tbl_top_placas    = QTableWidget(); self._prep(self.tbl_top_placas, ["Placa","Abastec.","Litros","Valor (R$)"])
+        twrap = QHBoxLayout(); twrap.addWidget(self.tbl_top_infracoes, 1); twrap.addWidget(self.tbl_top_placas, 1)
+        ov.addLayout(twrap)
+        self.tabs.addTab(self.tab_over, "VISÃO GERAL")
+
+        # MULTAS
+        self.tab_m = QWidget(); vm = QVBoxLayout(self.tab_m)
+        self.tbl_multas = QTableWidget(); self._prep(self.tbl_multas, ["FLUIG","Condutor","Placa","Órgão","Infração","Valor (R$)","Data","Score"])
+        vm.addWidget(self.tbl_multas)
+        self.tabs.addTab(self.tab_m, "MULTAS")
+
+        # COMBUSTÍVEL
+        self.tab_c = QWidget(); vc = QVBoxLayout(self.tab_c)
+        self.tbl_abast = QTableWidget(); self._prep(self.tbl_abast, ["Data","Placa","Motorista","Combustível","Litros","R$/L","Valor (R$)","Estabelecimento","Cidade/UF"])
+        vc.addWidget(self.tbl_abast)
+        self.tabs.addTab(self.tab_c, "COMBUSTÍVEL")
+
+    # ---------- Utils UI ----------
+    @staticmethod
+    def _to_qdate(ts):
+        from PyQt6.QtCore import QDate
+        return QDate(int(ts.year), int(ts.month), int(ts.day))
+
+    def _prep(self, tbl, headers):
+        from PyQt6.QtWidgets import QHeaderView
+        tbl.setAlternatingRowColors(True)
+        tbl.setSortingEnabled(True)
+        tbl.horizontalHeader().setSortIndicatorShown(True)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tbl.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tbl.setColumnCount(len(headers))
+        tbl.setHorizontalHeaderLabels(headers)
+
+    def _fill(self, tbl, rows):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QTableWidgetItem
+        tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            for j, v in enumerate(r):
+                it = QTableWidgetItem(str(v))
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                tbl.setItem(i, j, it)
+        tbl.resizeColumnsToContents(); tbl.horizontalHeader().setStretchLastSection(True)
+        tbl.resizeRowsToContents()
+
+    # ---------- Período ----------
+    def _sliders_changed(self):
+        if not self._dates:
+            self._apply_filters_all(); return
+        a = min(self.sl_ini.value(), self.sl_fim.value())
+        b = max(self.sl_ini.value(), self.sl_fim.value())
+        da = self._dates[a]; db = self._dates[b]
+        self.de_ini.blockSignals(True); self.de_fim.blockSignals(True)
+        self.de_ini.setDate(self._to_qdate(da)); self.de_fim.setDate(self._to_qdate(db))
+        self.de_ini.blockSignals(False); self.de_fim.blockSignals(False)
+        self._apply_filters_all()
+
+    def _period_changed(self):
+        import pandas as pd
+        if not self._dates:
+            self._apply_filters_all(); return
+        def near_idx(qd):
+            ts = pd.Timestamp(qd.year(), qd.month(), qd.day())
+            arr = pd.Series(self._dates)
+            return int((arr - ts).abs().argmin())
+        i0 = near_idx(self.de_ini.date()); i1 = near_idx(self.de_fim.date())
+        self.sl_ini.blockSignals(True); self.sl_fim.blockSignals(True)
+        self.sl_ini.setValue(min(i0, i1)); self.sl_fim.setValue(max(i0, i1))
+        self.sl_ini.blockSignals(False); self.sl_fim.blockSignals(False)
+        self._apply_filters_all()
+
+    # ---------- Filtro principal ----------
+    def _apply_filters_all(self):
+        import pandas as pd
+        from utils import df_apply_global_texts
+
+        # período
+        q0, q1 = self.de_ini.date(), self.de_fim.date()
+        t0 = pd.Timestamp(q0.year(), q0.month(), q0.day())
+        t1 = pd.Timestamp(q1.year(), q1.month(), q1.day())
+        a, b = (t0, t1) if t0 <= t1 else (t1, t0)
+
+        # base multas
+        dm = self.df_multas.copy()
+        if not dm.empty:
+            dm = dm[(dm["DT_M"].notna()) & (dm["DT_M"] >= a) & (dm["DT_M"] <= b)]
+            texts = self.global_bar.values()
+            dm = df_apply_global_texts(dm, texts)
+        # base combustível
+        dc = self.df_comb.copy()
+        if not dc.empty:
+            dc = dc[(dc["DT_C"].notna()) & (dc["DT_C"] >= a) & (dc["DT_C"] <= b)]
+            texts = self.global_bar.values()
+            dc = df_apply_global_texts(dc, texts)
+
+        # segmentados: Responsável, Condutor, Placa
+        resp = self.cb_resp.currentText().strip()
+        cond = self.cb_cond.currentText().strip()
+        pla  = self.cb_placa.currentText().strip()
+
+        if resp:
+            if not dm.empty and ("RESPONSAVEL" in dm.columns): dm = dm[dm["RESPONSAVEL"].astype(str) == resp]
+            if not dc.empty and ("RESPONSAVEL" in dc.columns): dc = dc[dc["RESPONSAVEL"].astype(str) == resp]
+        if cond:
+            if not dm.empty: dm = dm[dm["MOTORISTA_X"].astype(str) == cond]
+            if not dc.empty and ("MOTORISTA" in dc.columns): dc = dc[dc["MOTORISTA"].astype(str) == cond]
+        if pla:
+            if not dm.empty and ("PLACA" in dm.columns): dm = dm[dm["PLACA"].astype(str) == pla]
+            if not dc.empty and ("PLACA" in dc.columns): dc = dc[dc["PLACA"].astype(str) == pla]
+
+        # repop combos (dependentes) — sempre com base no período + global
+        self._repopulate_segmented(dm, dc)
+
+        # guarda filtrados
+        self.dm_f = dm
+        self.dc_f = dc
+
+        # KPIs + charts + tabelas
+        self._refresh_overview()
+        self._refresh_multas_table()
+        self._refresh_comb_table()
+
+    def _repopulate_segmented(self, dm, dc):
+        # Responsáveis
+        resps = set()
+        if not dm.empty and "RESPONSAVEL" in dm.columns: resps |= set(dm["RESPONSAVEL"].astype(str).unique())
+        if not dc.empty and "RESPONSAVEL" in dc.columns: resps |= set(dc["RESPONSAVEL"].astype(str).unique())
+        # Condutores
+        conds = set()
+        if not dm.empty: conds |= set(dm["MOTORISTA_X"].astype(str).unique())
+        if not dc.empty and "MOTORISTA" in dc.columns: conds |= set(dc["MOTORISTA"].astype(str).unique())
+        # Placas
+        placas = set()
+        if not dm.empty and "PLACA" in dm.columns: placas |= set(dm["PLACA"].astype(str).unique())
+        if not dc.empty and "PLACA" in dc.columns: placas |= set(dc["PLACA"].astype(str).unique())
+
+        def _reset_combo(cb, values):
+            cur = cb.currentText().strip()
+            cb.blockSignals(True); cb.clear()
+            cb.addItem("")  # vazio = todos
+            for v in sorted([x for x in values if str(x).strip()]):
+                cb.addItem(str(v))
+            # tenta manter seleção se ainda existir
+            if cur and cur in [cb.itemText(i) for i in range(cb.count())]:
+                cb.setCurrentText(cur)
+            cb.blockSignals(False)
+
+        _reset_combo(self.cb_resp,  resps)
+        _reset_combo(self.cb_cond,  conds)
+        _reset_combo(self.cb_placa, placas)
+
+    # ---------- Refresh VISÃO GERAL ----------
+    def _refresh_overview(self):
+        import pandas as pd
+        # KPIs
+        qtd_multas = len(self.dm_f) if not self.dm_f.empty else 0
+        val_multas = self.dm_f["VALOR_NUM"].sum() if not self.dm_f.empty else 0.0
+        score = int(self.dm_f["VALOR_NUM"].map(self._score).sum()) if not self.dm_f.empty else 0
+        litros = self.dc_f["LITROS_NUM"].sum() if not self.dc_f.empty else 0.0
+        custo  = self.dc_f["VALOR_NUM"].sum()  if not self.dc_f.empty else 0.0
+        self.kpi_multas.setText(str(qtd_multas))
+        self.kpi_valor.setText(f"{val_multas:.2f}")
+        self.kpi_score.setText(str(score))
+        self.kpi_litros.setText(f"{litros:.2f}")
+        self.kpi_custo.setText(f"{custo:.2f}")
+
+        # Charts — Multas por órgão/infração e Combustível por tipo
+        from collections import Counter
+        from matplotlib.patches import Circle
+        ax1 = self.fig1.clear().add_subplot(111)
+        if not self.dm_f.empty:
+            org = None
+            for c in ("ÓRGÃO","ORGÃO","ORGAO","ORG"):
+                if c in self.dm_f.columns: org = c; break
+            if org is None: org = "PLACA" if "PLACA" in self.dm_f.columns else None
+            labels, values = [], []
+            if org:
+                cc = Counter(self.dm_f[org].astype(str))
+                for k,v in cc.most_common(6):
+                    labels.append(k); values.append(v)
+            ax1.pie(values or [1], labels=labels or ["Sem dados"], autopct=lambda p: f"{p:.0f}%")
+            circ = Circle((0,0), 0.55, facecolor="white")
+            ax1.add_artist(circ)
+            ax1.set_title("Multas por Órgão (top 6)")
+        self.cv1.draw()
+
+        ax2 = self.fig2.clear().add_subplot(111)
+        if not self.dc_f.empty and "COMBUSTIVEL" in self.dc_f.columns:
+            cc = Counter(self.dc_f["COMBUSTIVEL"].astype(str))
+            labels, values = zip(*cc.most_common(6)) if cc else (["Sem dados"], [1])
+            ax2.pie(values, labels=labels, autopct=lambda p: f"{p:.0f}%")
+            circ = Circle((0,0), 0.55, facecolor="white")
+            ax2.add_artist(circ)
+            ax2.set_title("Tipo de Combustível (top 6)")
+        self.cv2.draw()
+
+        # Tabelas-resumo
+        rows_inf = []
+        if not self.dm_f.empty:
+            infc = None
+            for c in ("TIPO INFRACAO","TIPO INFRAÇÃO","INFRACAO","INFRAÇÃO","NOTIFICAÇÃO","NOTIFICACAO","ÓRGÃO","ORGÃO","ORGAO"):
+                if c in self.dm_f.columns: infc = c; break
+            g = self.dm_f.groupby(infc if infc else "PLACA", dropna=False).agg(
+                QT=("FLUIG","count"), VAL=("VALOR_NUM","sum")
+            ).reset_index().sort_values(["VAL","QT"], ascending=False).head(12)
+            rows_inf = [[r[infc] if infc else r["PLACA"], int(r["QT"]), f"{r['VAL']:.2f}"] for _, r in g.iterrows()]
+        self._fill(self.tbl_top_infracoes, rows_inf)
+
+        rows_pl = []
+        if not self.dc_f.empty:
+            g2 = self.dc_f.groupby("PLACA", dropna=False).agg(
+                QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
+            ).reset_index().sort_values(["VL","LT","QT"], ascending=False).head(12)
+            rows_pl = [[r["PLACA"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g2.iterrows()]
+        self._fill(self.tbl_top_placas, rows_pl)
+
+    # ---------- Multas detalhadas ----------
+    def _refresh_multas_table(self):
+        d = self.dm_f.copy()
+        if d.empty:
+            self._fill(self.tbl_multas, []); return
+
+        # detecta colunas
+        org = None
+        for c in ("ÓRGÃO","ORGÃO","ORGAO","ORG"):
+            if c in d.columns: org = c; break
+        inf = None
+        for c in ("TIPO INFRACAO","TIPO INFRAÇÃO","INFRACAO","INFRAÇÃO","NOTIFICACAO","NOTIFICAÇÃO"):
+            if c in d.columns: inf = c; break
+        dtc = "DT_M"
+
+        rows = []
+        for _, r in d.sort_values("VALOR_NUM", ascending=False).iterrows():
+            rows.append([
+                r.get("FLUIG",""),
+                r.get("MOTORISTA_X",""),
+                r.get("PLACA",""),
+                r.get(org,"") if org else "",
+                r.get(inf,"") if inf else "",
+                f"{float(r.get('VALOR_NUM',0)):.2f}",
+                r[dtc].strftime("%d/%m/%Y") if pd.notna(r.get(dtc)) else "",
+                self._score(r.get("VALOR_NUM",0))
+            ])
+        self._fill(self.tbl_multas, rows)
+
+    # ---------- Combustível detalhado ----------
+    def _refresh_comb_table(self):
+        d = self.dc_f.copy()
+        if d.empty:
+            self._fill(self.tbl_abast, []); return
+
+        rows = []
+        for _, r in d.sort_values("DT_C").iterrows():
+            rows.append([
+                r["DT_C"].strftime("%d/%m/%Y %H:%M") if pd.notna(r["DT_C"]) else "",
+                r.get("PLACA",""),
+                r.get("MOTORISTA",""),
+                r.get("COMBUSTIVEL",""),
+                f"{float(r.get('LITROS_NUM',0)):.2f}",
+                f"{float(r.get('VL_LITRO_NUM',0)):.2f}",
+                f"{float(r.get('VALOR_NUM',0)):.2f}",
+                r.get("ESTABELECIMENTO",""),
+                r.get("CIDADE_UF",""),
+            ])
+        self._fill(self.tbl_abast, rows)
+
+
+
 class MainWindow(QMainWindow):
-    """
-    Janela principal em abas:
-      - Aba 'Início' com botões grandes
-      - Cada módulo abre em uma nova aba (sem duplicar)
-    Botões: Base, Infrações e Multas, Combustível, Relatórios, Alertas
-    """
+    
     def __init__(self, user_email: str | None = None):
         super().__init__()
         self.setWindowTitle("GESTÃO DE FROTAS")
         self.resize(1280, 860)
 
-        # Abas
+        # ----- QTabWidget principal -----
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.setCentralWidget(self.tab_widget)
 
-        # ==== ABA INÍCIO ====
+        # ====== ABA INÍCIO ======
         home = QWidget()
         hv = QVBoxLayout(home)
+        hv.setContentsMargins(18, 18, 18, 18)
 
         # Cabeçalho
         title_card = QFrame(); title_card.setObjectName("glass")
         apply_shadow(title_card, radius=20, blur=60, color=QColor(0, 0, 0, 60))
         tv = QVBoxLayout(title_card); tv.setContentsMargins(24, 24, 24, 24)
 
-        t = QLabel("Gestão de Frota")
+        t = QLabel("Gestão de Frotas")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         t.setFont(QFont("Arial", 28, QFont.Weight.Bold))
         tv.addWidget(t)
 
         if user_email:
-            tv.addWidget(QLabel(f"Logado como: {user_email}"),
-                         alignment=Qt.AlignmentFlag.AlignCenter)
+            lab_user = QLabel(f"Logado como: {user_email}")
+            lab_user.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tv.addWidget(lab_user)
+
         hv.addWidget(title_card)
 
         # Cartão com botões
         grid_card = QFrame(); grid_card.setObjectName("card"); apply_shadow(grid_card, radius=18)
-        gv = QGridLayout(grid_card); gv.setContentsMargins(18, 18, 18, 18)
+        gv = QGridLayout(grid_card); gv.setContentsMargins(18, 18, 18, 18); gv.setHorizontalSpacing(12); gv.setVerticalSpacing(12)
 
         buttons = [
             ("Base", self.open_base),
@@ -874,11 +1411,11 @@ class MainWindow(QMainWindow):
             ("Combustível", self.open_combustivel),
             ("Relatórios", self.open_relatorios),
             ("Alertas", self.open_alertas),
+            ("Condutor", self.open_condutor),
         ]
-
         for i, (label, slot) in enumerate(buttons):
             b = QPushButton(label)
-            b.setMinimumHeight(64)
+            b.setMinimumHeight(56)
             b.setFont(QFont("Arial", 16, QFont.Weight.Bold))
             b.clicked.connect(slot)
             gv.addWidget(b, i // 2, i % 2)
@@ -887,18 +1424,21 @@ class MainWindow(QMainWindow):
 
         # Barra inferior
         bar = QHBoxLayout()
-        out = QPushButton("Sair"); out.setObjectName("danger")
-        out.setMinimumHeight(44)
-        out.clicked.connect(self.close)
-        bar.addStretch(1); bar.addWidget(out)
+        btn_out = QPushButton("Sair"); btn_out.setObjectName("danger")
+        btn_out.setMinimumHeight(44)
+        btn_out.clicked.connect(self.close)
+        bar.addStretch(1); bar.addWidget(btn_out)
         hv.addLayout(bar)
 
         # Coloca a Home
         self.tab_widget.addTab(home, "Início")
 
+        # Abre Base ao iniciar
+        self.add_or_focus("Base", self._factory_base)
+
     # ===== Helpers =====
-    def add_or_focus(self, title, factory):
-        """Se a aba já existe, foca; senão cria."""
+    def add_or_focus(self, title: str, factory):
+        """Se a aba já existe, foca; senão cria a partir de 'factory'."""
         for idx in range(self.tab_widget.count()):
             if self.tab_widget.tabText(idx).strip().lower() == str(title).strip().lower():
                 self.tab_widget.setCurrentIndex(idx)
@@ -915,43 +1455,70 @@ class MainWindow(QMainWindow):
         self.tab_widget.removeTab(index)
         w.deleteLater()
 
-    # ===== Ações dos botões =====
-    def open_base(self):
+    # ===== Factories (evitam import circular no topo) =====
+    def _factory_base(self):
+        from gestao_frota_single import BaseTab
+        return BaseTab()
+
+    def _factory_multas(self):
+        from multas import InfraMultasWindow
+        return InfraMultasWindow()
+
+    def _factory_combustivel(self):
+        # Use a visão detalhada nova com filtro global único
         try:
-            # BaseTab já existe no mesmo arquivo (gestao_frota_single)
-            from gestao_frota_single import BaseTab
-            self.add_or_focus("Base", lambda: BaseTab())
+            from combustivel import CombustivelDetalhadoWindow
+            return CombustivelDetalhadoWindow()
         except Exception as e:
-            QMessageBox.warning(self, "Base", f"Não foi possível abrir a Base.\n{e}")
+            QMessageBox.warning(self, "Combustível", f"Não foi possível abrir Combustível.\n{e}")
+            from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+            w = QWidget(); l = QVBoxLayout(w); l.addWidget(QLabel("Erro ao abrir Combustível."))
+            return w
+
+    def _factory_relatorios(self):
+        # Abre Relatórios com path configurado
+        from relatorios import RelatorioWindow
+        path = cfg_get("detalhamento_path")
+        if not path:
+            QMessageBox.information(self, "Relatórios", "Configure a planilha de Detalhamento em Base.")
+            from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+            w = QWidget(); l = QVBoxLayout(w); l.addWidget(QLabel("Relatórios: caminho não configurado."))
+            return w
+        return RelatorioWindow(path)
+
+    def _factory_alertas(self):
+        # AlertsTab pode estar em main_window.py; se não existir, mostra aviso
+        try:
+            from main_window import AlertsTab
+            return AlertsTab()
+        except Exception:
+            QMessageBox.warning(self, "Alertas", "Classe AlertsTab não encontrada.")
+            from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+            w = QWidget(); l = QVBoxLayout(w); l.addWidget(QLabel("Alertas indisponível."))
+            return w
+        
+    def _factory_condutor(self):
+        from gestao_frota_single import CondutorTab
+        return CondutorTab()
+
+    
+    def open_base(self):
+        self.add_or_focus("Base", self._factory_base)
 
     def open_multas(self):
-        # Janela de Infrações/Multas já pronta
-        self.add_or_focus("Infrações e Multas", lambda: InfraMultasWindow())
-
+        self.add_or_focus("Infrações e Multas", self._factory_multas)
 
     def open_combustivel(self):
-
-        try:
-            from combustivel import CombustivelMenu
-            self.add_or_focus("Combustível", lambda: CombustivelMenu(self.add_or_focus))
-        except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Combustível", f"Não foi possível abrir o menu de Combustível.\n{e}")
-            
+        self.add_or_focus("Combustível — Detalhada", self._factory_combustivel)
 
     def open_relatorios(self):
-        # Pede um arquivo e abre o Relatório
-        p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
-        if not p:
-            return
-        self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
+        self.add_or_focus("Relatórios", self._factory_relatorios)
 
     def open_alertas(self):
-        # Aba Alertas mostrando as 3 datas oficiais + *_STATUS
-        if AlertsTab is None:
-            QMessageBox.warning(self, "Alertas", "Classe AlertsTab não encontrada.")
-            return
-        self.add_or_focus("Alertas", lambda: AlertsTab())
+        self.add_or_focus("Alertas", self._factory_alertas)
+
+    def open_condutor(self):
+        self.add_or_focus("Condutor", self._factory_condutor)
 
 
 

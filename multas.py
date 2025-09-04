@@ -657,210 +657,274 @@ class GeralMultasView(QWidget):
             return
         self.parent_for_edit.editar_with_key(key)
 
-class InfraMultasWindow(QWidget):
+
+# multas.py
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QPushButton, QLabel,
+    QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QMessageBox
+)
+import pandas as pd
+
+from gestao_frota_single import cfg_get, ensure_status_cols, DATE_COLS
+from utils import apply_shadow, GlobalFilterBar, df_apply_global_texts
+
+# Se não existir na sua base, deixe o stub para não quebrar import:
+try:
+    from multas import CenarioGeralWindow as _CGW_CHECK  # se a classe estiver noutro arquivo seu
+except Exception:
+    _CGW_CHECK = None
+
+class CenarioGeralWindow(QWidget):
+    """
+    Cenário Geral de Multas com cálculo de pontuação por valor.
+    Abre em ABA e tem filtro global único.
+    """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Infrações e Multas")
-        self.resize(1240, 820)
+        self.df_base = self._load_df()
 
-        lay = QVBoxLayout(self)
-        self.view_geral = GeralMultasView(self)
-        lay.addWidget(self.view_geral)
+        root = QVBoxLayout(self)
 
-        # --- linha de botões abaixo da view ---
-        btn_row = QHBoxLayout()
+        # header + filtro
+        head = QFrame(); head.setObjectName("card"); apply_shadow(head, radius=16)
+        hv = QVBoxLayout(head)
+        hv.addWidget(QLabel("Cenário Geral de Multas"), alignment=Qt.AlignmentFlag.AlignLeft)
+        self.filter = GlobalFilterBar("Filtro global:")
+        self.filter.changed.connect(self._apply_filter)
+        hv.addWidget(self.filter)
+        root.addWidget(head)
 
-        btn_det = QPushButton("Detalhamento")
-        btn_det.clicked.connect(self.abrir_detalhamento)
+        # tabela
+        self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        root.addWidget(self.table, 1)
 
-        btn_aberto = QPushButton("Multas em Aberto")
-        btn_aberto.clicked.connect(self.abrir_multas_em_aberto)
+        self._apply_filter()
 
-        btn_cenario = QPushButton("Cenário Geral")
-        btn_cenario.clicked.connect(self.abrir_cenario_geral)
-
-        btn_row.addWidget(btn_det)
-        btn_row.addWidget(btn_aberto)
-        btn_row.addWidget(btn_cenario)
-        btn_row.addStretch(1)
-
-        lay.addLayout(btn_row)
-
-        # Watcher do CSV para auto-reload
-        self.watcher = QFileSystemWatcher()
-        csv = cfg_get("geral_multas_csv")
-        if os.path.exists(csv):
-            self.watcher.addPath(csv)
-        self.watcher.fileChanged.connect(self._csv_changed)
-
-    # --------- Watcher helpers ---------
-    def _csv_changed(self, path):
+    def _load_df(self) -> pd.DataFrame:
+        path = cfg_get("geral_multas_csv")
+        if not path:
+            QMessageBox.information(self, "Cenário Geral", "Configure o caminho do GERAL_MULTAS.csv em Base.")
+            return pd.DataFrame()
         if not os.path.exists(path):
-            QTimer.singleShot(500, lambda: self._readd_watch(path))
+            QMessageBox.warning(self, "Cenário Geral", f"Arquivo não encontrado:\n{path}")
+            return pd.DataFrame()
+        df = pd.read_csv(path, dtype=str).fillna("")
+        df = ensure_status_cols(df, csv_path=None)
+
+        # normaliza valor e cria SCORE
+        def _to_num(s: str) -> float:
+            s = str(s or "").strip()
+            s = s.replace(".", "").replace(",", ".")
+            try: return float(s)
+            except: return 0.0
+
+        if "VALOR" not in df.columns:
+            cand = [c for c in df.columns if c.upper() in ("VALOR MULTA","VALOR_MULTA","VALOR DA MULTA")]
+            df["VALOR"] = df[cand[0]] if cand else ""
+
+        df["VALOR_NUM"] = df["VALOR"].map(_to_num)
+        def _score(v):
+            v = float(v or 0)
+            if v >= 1000: return 5
+            if v >= 500:  return 3
+            if v >= 200:  return 2
+            return 1
+        df["SCORE"] = df["VALOR_NUM"].map(_score)
+
+        # Nome do motorista
+        if "INFRATOR" in df.columns:
+            df["MOTORISTA"] = df["INFRATOR"]
+        elif "NOME" in df.columns:
+            df["MOTORISTA"] = df["NOME"]
+        else:
+            df["MOTORISTA"] = ""
+
+        return df
+
+    def _apply_filter(self):
+        texts = self.filter.values()
+        dfv = df_apply_global_texts(self.df_base, texts)
+
+        # colunas principais
+        cols = []
+        for c in ["FLUIG","MOTORISTA","PLACA","ÓRGÃO","ORGÃO","ORGAO","INFRACAO","INFRAÇÃO","TIPO INFRAÇÃO","VALOR","VALOR_NUM","SCORE"]:
+            if c in dfv.columns and c not in cols:
+                cols.append(c)
+        # adiciona datas oficiais
+        for c in DATE_COLS:
+            if c in dfv.columns: cols.append(c)
+
+        if not cols:
+            cols = list(dfv.columns)
+
+        self._fill_table(dfv, cols)
+
+    def _fill_table(self, df, cols):
+        self.table.clear()
+        self.table.setColumnCount(len(cols))
+        self.table.setHorizontalHeaderLabels(cols)
+        self.table.setRowCount(len(df))
+        for i, (_, r) in enumerate(df.iterrows()):
+            for j, c in enumerate(cols):
+                v = "" if pd.isna(r.get(c, "")) else str(r.get(c, ""))
+                it = QTableWidgetItem(v)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, j, it)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+import os
+
+class InfraMultasWindow(QWidget):
+    """
+    Tela principal de 'Infrações e Multas' com:
+      - Filtro global padrão (com +)
+      - Botões: 'Multas em Aberto' e 'Cenário Geral'
+      - Abre abas internas via QTabWidget, mas também integra com add_or_focus do MainWindow
+    """
+    def __init__(self):
+        super().__init__()
+        self.df_base = self._load_df()
+
+        root = QVBoxLayout(self)
+
+        # Barra superior com ações
+        top = QFrame(); top.setObjectName("card"); apply_shadow(top, radius=16)
+        tv = QVBoxLayout(top)
+
+        row1 = QHBoxLayout()
+        btn_aberto = QPushButton("Multas em Aberto")
+        btn_cenario = QPushButton("Cenário Geral")
+        btn_aberto.clicked.connect(self._open_multas_aberto)
+        btn_cenario.clicked.connect(self._open_cenario_geral)
+        row1.addWidget(btn_aberto); row1.addWidget(btn_cenario); row1.addStretch(1)
+        tv.addLayout(row1)
+
+        # Filtro global
+        self.filter = GlobalFilterBar("Filtro global:")
+        self.filter.changed.connect(self._apply_filter_self)
+        tv.addWidget(self.filter)
+
+        root.addWidget(top)
+
+        # Abas internas (lista + resultados)
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs, 1)
+
+        # Aba: Lista
+        self.tab_lista = QWidget(); lv = QVBoxLayout(self.tab_lista)
+        self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        lv.addWidget(self.table)
+        self.tabs.addTab(self.tab_lista, "LISTA")
+
+        self._apply_filter_self()
+
+    def _load_df(self) -> pd.DataFrame:
+        path = cfg_get("geral_multas_csv")
+        if not path:
+            QMessageBox.information(self, "Multas", "Configure o caminho do GERAL_MULTAS.csv em Base.")
+            return pd.DataFrame()
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Multas", f"Arquivo não encontrado:\n{path}")
+            return pd.DataFrame()
+        df = pd.read_csv(path, dtype=str).fillna("")
+        return ensure_status_cols(df, csv_path=None)
+
+    # === Filtro local (aba LISTA) ===
+    def _apply_filter_self(self):
+        texts = self.filter.values()
+        dfv = df_apply_global_texts(self.df_base, texts)
+        self._fill_table(dfv)
+
+    def _fill_table(self, df):
+        headers = list(df.columns)
+        self.table.clear()
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(df))
+        for i, (_, r) in enumerate(df.iterrows()):
+            for j, c in enumerate(headers):
+                v = "" if pd.isna(r.get(c, "")) else str(r.get(c, ""))
+                it = QTableWidgetItem(v)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, j, it)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+    # === Ações dos botões ===
+    def _open_cenario_geral(self):
+        """
+        Abre a aba 'Cenário Geral' usando o add_or_focus do MainWindow, se disponível.
+        Se estiver rodando fora do MainWindow, abre como aba interna.
+        """
+        # tenta abrir na MainWindow (abas principais)
+        mw = self._find_mainwindow_with_tabs()
+        if mw is not None and hasattr(mw, "add_or_focus"):
+            mw.add_or_focus("Cenário Geral de Multas", lambda: CenarioGeralWindow())
             return
-        QTimer.singleShot(500, self.reload_geral)
 
-    def _readd_watch(self, path):
-        if os.path.exists(path):
-            self.watcher.addPath(path)
-        self.reload_geral()
+        # fallback: aba interna
+        w = CenarioGeralWindow()
+        self.tabs.addTab(w, "CENÁRIO GERAL")
+        self.tabs.setCurrentWidget(w)
 
-    def reload_geral(self):
-        self.view_geral.recarregar()
-
-    # --------- Abrir Detalhamento (RelatorioWindow) ---------
-    def abrir_detalhamento(self):
-        from relatorios import RelatorioWindow
-        path = cfg_get("detalhamento_path")
-        if not path or not os.path.exists(path):
-            QMessageBox.information(self, "Detalhamento", "Configure a planilha de Detalhamento na Base.")
+    def _open_multas_aberto(self):
+        """
+        Filtra e mostra apenas multas 'em aberto'.
+        Regra simples: qualquer *_STATUS em ('Pendente','Vencido') conta como em aberto.
+        """
+        df = self.df_base.copy()
+        if df.empty:
+            QMessageBox.information(self, "Multas em Aberto", "Não há dados.")
             return
-        w = RelatorioWindow(path)
-        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.show()
-
-    def abrir_multas_em_aberto(self):
-        # Foca na visão principal e recarrega o CSV (mantendo filtros padrão de "abertas" se aplicáveis)
-        try:
-            self.view_geral.recarregar()
-            QMessageBox.information(self, "Multas em Aberto", "Exibindo Multas em Aberto na tabela principal.")
-        except Exception as e:
-            QMessageBox.warning(self, "Multas em Aberto", str(e))
-
-    def abrir_cenario_geral(self):
-        try:
-            from main_window import CenarioGeralWindow
-        except Exception:
-            try:
-                from .main_window import CenarioGeralWindow
-            except Exception as e:
-                QMessageBox.critical(self, "Cenário Geral", f"Classe CenarioGeralWindow não encontrada: {e}")
-                return
-        try:
-            w = CenarioGeralWindow()
-            w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-            w.show()
-        except Exception as e:
-            QMessageBox.critical(self, "Cenário Geral", f"Não foi possível abrir: {e}")
-
-    # --------- Conferir FLUIG (diferenças CSV x Detalhamento) ---------
-    def conferir_fluig(self):
-        # Imports locais para evitar símbolos indefinidos no arquivo inteiro
-        from utils import ensure_status_cols, ConferirFluigDialog
-
-        try:
-            detalhamento_path = cfg_get("detalhamento_path")
-            df_det = pd.read_excel(detalhamento_path, dtype=str).fillna("")
-            if df_det.empty or len(df_det.columns) < 2:
-                QMessageBox.information(self, "Conferir FLUIG", "Planilha de Detalhamento vazia ou inválida.")
-                return
-
-            # coluna FLUIG do detalhamento
-            det_fcol = next((c for c in df_det.columns if "fluig" in str(c).lower() or "nº fluig" in str(c).lower()), None)
-            if det_fcol is None:
-                QMessageBox.warning(self, "Conferir FLUIG", "Coluna FLUIG não encontrado no Detalhamento.")
-                return
-
-            # CSV base
-            csv_path = cfg_get("geral_multas_csv")
-            if not csv_path or not os.path.exists(csv_path):
-                QMessageBox.warning(self, "Conferir FLUIG", "Caminho do GERAL_MULTAS.csv não configurado.")
-                return
-            df_csv = pd.read_csv(csv_path, dtype=str).fillna("")
-            df_csv = ensure_status_cols(df_csv, csv_path)
-
-            # Normaliza e compara
-            left_only = df_det[~df_det[det_fcol].astype(str).str.strip().isin(df_csv.get("FLUIG", pd.Series([], dtype=str)).astype(str).str.strip())]
-            right_only = df_csv[~df_csv.get("FLUIG", pd.Series([], dtype=str)).astype(str).str.strip().isin(df_det[det_fcol].astype(str).str.strip())]
-
-            dlg = ConferirFluigDialog(self, left_only, right_only)
-            dlg.exec()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Conferir FLUIG", str(e))
-
-    # --------- CRUD ---------
-    def inserir(self, prefill_fluig=None):
-        dlg = InserirDialog(self, prefill_fluig)
-        dlg.exec()
-        self.reload_geral()
-
-    def editar(self):
-        dlg = EditarDialog(self)
-        dlg.exec()
-        self.reload_geral()
-
-    def editar_with_key(self, key):
-        dlg = EditarDialog(self)
-        dlg.le_key.setText(str(key))
-        dlg.load_record()
-        dlg.exec()
-        self.reload_geral()
-
-    def excluir(self):
-        dlg = ExcluirDialog(self)
-        dlg.exec()
-        self.reload_geral()
-
-    def fase_pastores(self):
-        # Import local elimina o erro do Pylance ("load_fase_pastores" não está definido)
-        from utils import load_fase_pastores
-
-        try:
-            df = load_fase_pastores()
-            if df.empty:
-                QMessageBox.information(self, "Fase Pastores", "Não foi possível localizar a planilha de Fase Pastores.")
-                return
-
-            # Inserir novos FLUIGs
-            csv = cfg_get("geral_multas_csv")
-            base = pd.read_csv(csv, dtype=str).fillna("")
-            base["FLUIG"] = base.get("FLUIG", "").astype(str).str.strip()
-
-            novos = df[~df["FLUIG"].astype(str).str.strip().isin(base["FLUIG"])]
-            if not novos.empty:
-                # colunas mínimas
-                for c in ["INFRATOR","ANO","MES","PLACA","NOTIFICACAO","ORGÃO",
-                          "DATA INDICAÇÃO","BOLETO","SGU",
-                          "DATA INDICAÇÃO_STATUS","BOLETO_STATUS","SGU_STATUS","COMENTARIO"]:
-                    if c not in base.columns:
-                        base[c] = ""
-
-                # preenche campos obrigatórios vazios para alinhar com base
-                for c in ["INFRATOR","ANO","MES","PLACA","NOTIFICACAO","ORGÃO",
-                          "DATA INDICAÇÃO","BOLETO","SGU",
-                          "DATA INDICAÇÃO_STATUS","BOLETO_STATUS","SGU_STATUS","COMENTARIO"]:
-                    if c not in novos.columns:
-                        novos[c] = ""
-
-                base = pd.concat([base, novos[base.columns]], ignore_index=True)
-                base.to_csv(csv, index=False)
-                QMessageBox.information(self, "Fase Pastores", f"Inseridos {len(novos)} registros.")
-            else:
-                QMessageBox.information(self, "Fase Pastores", "Nenhum novo FLUIG encontrado.")
-        except Exception as e:
-            QMessageBox.critical(self, "Fase Pastores", str(e))
-        self.reload_geral()
-
-    def comentar_with_key(self, key):
-        from PyQt6.QtWidgets import QInputDialog  # import local para garantir símbolo
-        key = str(key).strip()
-        if not key:
-            QMessageBox.warning(self, "Comentário", "FLUIG inválido para comentar.")
+        st_cols = [c for c in df.columns if c.endswith("_STATUS")]
+        if not st_cols:
+            QMessageBox.information(self, "Multas em Aberto", "Colunas *_STATUS não encontradas.")
             return
-        csv = cfg_get("geral_multas_csv")
-        df = pd.read_csv(csv, dtype=str).fillna("")
-        if "COMENTARIO" not in df.columns:
-            df["COMENTARIO"] = ""
-        rows = df.index[df.get("FLUIG", pd.Series([], dtype=str)).astype(str).str.strip() == key].tolist()
-        if not rows:
-            QMessageBox.warning(self, "Comentário", f"FLUIG {key} não encontrado no CSV.")
-            return
-        i = rows[0]
-        atual = str(df.at[i, "COMENTARIO"])
-        texto, ok = QInputDialog.getMultiLineText(self, "Comentário", f"FLUIG {key} - Digite/edite o comentário:", atual)
-        if ok:
-            df.at[i, "COMENTARIO"] = texto.strip()
-            df.to_csv(csv, index=False)
-            QMessageBox.information(self, "Comentário", "Comentário salvo.")
-            self.reload_geral()
+
+        mask = pd.Series(False, index=df.index)
+        for c in st_cols:
+            sc = df[c].astype(str).str.strip()
+            mask |= sc.isin(["Pendente","Vencido"])
+        view = df[mask].copy()
+
+        # Abre como aba interna “ABERTAS”
+        w = QWidget(); v = QVBoxLayout(w)
+        info = QFrame(); info.setObjectName("card"); apply_shadow(info, radius=14)
+        iv = QHBoxLayout(info)
+        iv.addWidget(QLabel(f"Encontradas {len(view)} multas em aberto."))
+        v.addWidget(info)
+        t = QTableWidget(); v.addWidget(t, 1)
+        t.setAlternatingRowColors(True); t.setSortingEnabled(True)
+        t.horizontalHeader().setSortIndicatorShown(True)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        t.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        headers = list(view.columns); t.setColumnCount(len(headers)); t.setHorizontalHeaderLabels(headers); t.setRowCount(len(view))
+        for i, (_, r) in enumerate(view.iterrows()):
+            for j, c in enumerate(headers):
+                it = QTableWidgetItem(str(r.get(c, ""))); it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                t.setItem(i, j, it)
+        t.resizeColumnsToContents(); t.horizontalHeader().setStretchLastSection(True)
+        self.tabs.addTab(w, "ABERTAS")
+        self.tabs.setCurrentWidget(w)
+
+    def _find_mainwindow_with_tabs(self):
+        # Sobe na hierarquia procurando um QMainWindow com atributo tab_widget
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, "tab_widget"):
+                return p
+            p = p.parent()
+        return None

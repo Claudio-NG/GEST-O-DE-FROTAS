@@ -459,31 +459,78 @@ class CombustivelWindow(QWidget):
             self._fit_font(card["main"])
 
 
-# =============================================================================
-# VISÃO DETALHADA (cenários + régua de tempo + filtros avançados)
-# =============================================================================
+# --- Combustível — Visão Detalhada (classe completa) ---
 class CombustivelDetalhadoWindow(QWidget):
     """
-    Painel detalhado:
-    - Base = ExtratoGeral (principal)
-    - Complemento = ExtratoSimplificado (por PLACA)
-    - Filtro por DATA TRANSACAO (régua de tempo)
-    - Cenários: GERAL, DATA, PLACA, MOTORISTA, COMBUSTÍVEL, CIDADE/UF, ESTABELECIMENTO, RESPONSÁVEL
+    Visão Detalhada com:
+      - Filtro TEXTO GLOBAL único (padronizado, + para mais caixas; vazias somem)
+      - Régua de tempo (início/fim + sliders)
+      - Cenários em abas (GERAL, DATA, PLACA, MOTORISTA, COMBUSTÍVEL, CIDADE/UF, ESTABELECIMENTO, RESPONSÁVEL)
+    Abre como QWidget (para ser usado dentro de uma aba).
     """
+    # ========================= Helpers locais (independentes) =========================
+    @staticmethod
+    def _dt_parse_any(s):
+        import pandas as _pd
+        s = str(s).strip()
+        if not s:
+            return _pd.NaT
+        for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S",
+                    "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+            try:
+                return _pd.to_datetime(s, format=fmt, dayfirst=True, errors="raise")
+            except Exception:
+                pass
+        return _pd.to_datetime(s, dayfirst=True, errors="coerce")
+
+    @staticmethod
+    def _num_from_text(s):
+        import re as _re
+        if s is None:
+            return 0.0
+        txt = str(s).strip()
+        if not txt:
+            return 0.0
+        txt = _re.sub(r"[^\d.,-]", "", txt)
+        if ("," not in txt) and ("." not in txt):
+            try: return float(txt)
+            except: return 0.0
+        if "," in txt and "." in txt:
+            last_comma = txt.rfind(",")
+            last_dot = txt.rfind(".")
+            if last_comma > last_dot:
+                txt = txt.replace(".", "").replace(",", ".")
+            else:
+                txt = txt.replace(",", "")
+        else:
+            if "," in txt:
+                txt = txt.replace(",", ".")
+        try: return float(txt)
+        except: return 0.0
+
+    # ========================= Construtor =========================
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Combustível — Visão Detalhada")
-        self.resize(1280, 860)
+        self.setMinimumSize(1024, 680)  # responsivo: base segura
 
-        self.path_geral = cfg_get("extrato_geral_path")
-        self.path_simpl = cfg_get("extrato_simplificado_path")
+        # imports tardios (evita dependência circular no topo)
+        from gestao_frota_single import cfg_get, DATE_FORMAT
+        self.cfg_get = cfg_get
+        self.DATE_FORMAT = DATE_FORMAT
+
+        # dados
+        self.path_geral = self.cfg_get("extrato_geral_path")
+        self.path_simpl = self.cfg_get("extrato_simplificado_path")
 
         self._load_data()
         self._build_ui()
         self._apply_filters_and_refresh()
 
-    # ------- carga
+    # ========================= Carga =========================
     def _read_xls(self, path):
+        import pandas as pd
+        from PyQt6.QtWidgets import QMessageBox
         if not path:
             return pd.DataFrame()
         try:
@@ -493,91 +540,71 @@ class CombustivelDetalhadoWindow(QWidget):
             return pd.DataFrame()
 
     def _load_data(self):
+        import pandas as pd
         geral = self._read_xls(self.path_geral)
         simpl = self._read_xls(self.path_simpl)
 
         # Normaliza nomes mínimos - ExtratoGeral
         m1 = {
-            "DATA TRANSACAO":"DATA_TRANSACAO",
-            "PLACA":"PLACA",
-            "NOME MOTORISTA":"MOTORISTA",
-            "TIPO COMBUSTIVEL":"COMBUSTIVEL",
-            "LITROS":"LITROS",
-            "VL/LITRO":"VL_LITRO",
-            "VALOR EMISSAO":"VALOR",
-            "NOME ESTABELECIMENTO":"ESTABELECIMENTO",
-            "CIDADE":"CIDADE",
-            "UF":"UF",
-            "CIDADE/UF":"CIDADE_UF",
-            "SERVICO":"SERVICO",
-            "FORMA DE PAGAMENTO":"PAGAMENTO",
-            "RESPONSAVEL":"RESPONSAVEL",
-            "MODELO VEICULO":"MODELO",
-            "FAMILIA VEICULO":"FAMILIA",
-            "TIPO FROTA":"TIPO_FROTA",
-            "KM RODADOS OU HORAS TRABALHADAS":"KM_RODADOS",
-            "KM/LITRO OU LITROS/HORA":"KM_POR_L"
+            "DATA TRANSACAO":"DATA_TRANSACAO","PLACA":"PLACA","NOME MOTORISTA":"MOTORISTA",
+            "TIPO COMBUSTIVEL":"COMBUSTIVEL","LITROS":"LITROS","VL/LITRO":"VL_LITRO",
+            "VALOR EMISSAO":"VALOR","NOME ESTABELECIMENTO":"ESTABELECIMENTO","CIDADE":"CIDADE",
+            "UF":"UF","CIDADE/UF":"CIDADE_UF","RESPONSAVEL":"RESPONSAVEL",
+            "KM RODADOS OU HORAS TRABALHADAS":"KM_RODADOS","KM/LITRO OU LITROS/HORA":"KM_POR_L",
+            "MODELO VEICULO":"MODELO","FAMILIA VEICULO":"FAMILIA","TIPO FROTA":"TIPO_FROTA"
         }
         use1 = {src: dst for src, dst in m1.items() if src in geral.columns}
         geral = geral.rename(columns=use1)
 
         # Normaliza - ExtratoSimplificado
         m2 = {
-            "Placa":"PLACA",
-            "Família":"FAMILIA",
-            "Tipo Frota":"TIPO_FROTA",
-            "Modelo":"MODELO",
-            "Fabricante":"FABRICANTE",
-            "Cidade/UF":"CIDADE_UF",
-            "Nome Responsável":"RESPONSAVEL",
-            "Limite":"LIMITE",
-            "Valor Reservado":"RESERVADO",
-            "Limite Atual":"LIMITE_ATUAL",
-            "Compras (utilizado)":"UTILIZADO",
-            "Saldo":"SALDO",
-            "Limite Próximo Período":"LIMITE_PROX"
+            "Placa":"PLACA","Família":"FAMILIA","Tipo Frota":"TIPO_FROTA","Modelo":"MODELO",
+            "Cidade/UF":"CIDADE_UF","Nome Responsável":"RESPONSAVEL",
+            "Limite Atual":"LIMITE_ATUAL","Compras (utilizado)":"UTILIZADO","Saldo":"SALDO","Limite Próximo Período":"LIMITE_PROX"
         }
         use2 = {src: dst for src, dst in m2.items() if src in simpl.columns}
         simpl = simpl.rename(columns=use2)
 
         # Deriva cidade/uf se não houver no geral
         if "CIDADE_UF" not in geral.columns:
-            cu = []
-            for _, r in geral.iterrows():
-                cidade = str(r.get("CIDADE", "")).strip()
-                uf = str(r.get("UF", "")).strip()
-                cu.append(f"{cidade}/{uf}" if cidade or uf else "")
-            geral["CIDADE_UF"] = cu
+            geral["CIDADE_UF"] = geral.get("CIDADE","").astype(str).str.strip()+"/"+geral.get("UF","").astype(str).str.strip()
 
         # Tipos e números
-        geral["DT"] = geral.get("DATA_TRANSACAO", "").map(_dt_parse_any)
-        geral["LITROS_NUM"] = geral.get("LITROS", "").map(_num_from_text)
-        geral["VL_LITRO_NUM"] = geral.get("VL_LITRO", "").map(_num_from_text)
-        geral["VALOR_NUM"] = geral.get("VALOR", "").map(_num_from_text)
-        geral["KM_RODADOS_NUM"] = geral.get("KM_RODADOS", "").map(_num_from_text)
-        geral["KM_POR_L_NUM"] = geral.get("KM_POR_L", "").map(_num_from_text)
+        geral["DT"] = geral.get("DATA_TRANSACAO", "").map(self._dt_parse_any)
+        for c_src, c_num in [("LITROS","LITROS_NUM"),("VL_LITRO","VL_LITRO_NUM"),("VALOR","VALOR_NUM"),
+                             ("KM_RODADOS","KM_RODADOS_NUM"),("KM_POR_L","KM_POR_L_NUM")]:
+            geral[c_num] = geral.get(c_src, "").map(self._num_from_text)
 
         # Merge do simplificado por PLACA
         if not simpl.empty and "PLACA" in simpl.columns:
-            for c in ["LIMITE","RESERVADO","LIMITE_ATUAL","UTILIZADO","SALDO","LIMITE_PROX"]:
+            for c in ["LIMITE_ATUAL","UTILIZADO","SALDO","LIMITE_PROX"]:
                 if c in simpl.columns:
-                    simpl[c+"_NUM"] = simpl[c].map(_num_from_text)
-            self.df_base = geral.merge(
-                simpl[[c for c in simpl.columns if c]], on="PLACA", how="left", suffixes=("", "_S")
-            )
+                    simpl[c+"_NUM"] = simpl[c].map(self._num_from_text)
+            self.df_base = geral.merge(simpl, on="PLACA", how="left", suffixes=("", "_S"))
         else:
             self.df_base = geral.copy()
 
         # Datas para régua
         dates = sorted(list(self.df_base["DT"].dropna().dt.normalize().unique()))
+        import pandas as pd
         self._dates = dates if dates else []
         self._dmin = min(dates) if dates else pd.Timestamp.today().normalize()
         self._dmax = max(dates) if dates else pd.Timestamp.today().normalize()
 
-    # ------- UI
+    # ========================= UI =========================
     def _build_ui(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont, QColor
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QFrame, QLabel, QGridLayout, QHBoxLayout, QDateEdit, QComboBox,
+            QTableWidget, QHeaderView, QWidget, QSlider
+        )
+        from gestao_frota_single import DATE_FORMAT
+        from utils import apply_shadow, GlobalFilterBar
+
         root = QVBoxLayout(self)
 
+        # Título
         title = QFrame(); title.setObjectName("glass"); apply_shadow(title, radius=18, blur=60, color=QColor(0,0,0,60))
         tv = QVBoxLayout(title); tv.setContentsMargins(18,18,18,18)
         h = QLabel("Combustível — Visão Detalhada"); h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -585,11 +612,10 @@ class CombustivelDetalhadoWindow(QWidget):
         tv.addWidget(h)
         root.addWidget(title)
 
-        # KPIs + Régua de tempo
+        # KPIs + Régua
         top = QFrame(); top.setObjectName("card"); apply_shadow(top, radius=18)
-        tl = QVBoxLayout(top); tl.setContentsMargins(16,16,16,16)
+        tl = QVBoxLayout(top)
 
-        # KPIs
         krow = QGridLayout()
         self.kpi_abast = QLabel(); self.kpi_litros = QLabel(); self.kpi_valor = QLabel()
         for lbl in (self.kpi_abast, self.kpi_litros, self.kpi_valor):
@@ -603,11 +629,8 @@ class CombustivelDetalhadoWindow(QWidget):
         self.de_ini = QDateEdit(); self.de_fim = QDateEdit()
         for de in (self.de_ini, self.de_fim):
             de.setCalendarPopup(True); de.setDisplayFormat(DATE_FORMAT)
-            de.setMinimumDate(QDate(1752,9,14)); de.setSpecialValueText("")
-        self.de_ini.setDate(QDate(self._dmin.year, self._dmin.month, self._dmin.day))
-        self.de_fim.setDate(QDate(self._dmax.year, self._dmax.month, self._dmax.day))
+        self.de_ini.setDate(self._to_qdate(self._dmin)); self.de_fim.setDate(self._to_qdate(self._dmax))
 
-        from PyQt6.QtWidgets import QSlider
         self.sl_ini = QSlider(Qt.Orientation.Horizontal); self.sl_fim = QSlider(Qt.Orientation.Horizontal)
         n = max(0, len(self._dates)-1)
         for s in (self.sl_ini, self.sl_fim):
@@ -622,31 +645,10 @@ class CombustivelDetalhadoWindow(QWidget):
         tl.addLayout(r1); tl.addLayout(r2)
         root.addWidget(top)
 
-        # ===== Filtros por coluna =====
-        filt = QFrame(); filt.setObjectName("card"); apply_shadow(filt, radius=18)
-        fl = QVBoxLayout(filt); fl.setContentsMargins(12,12,12,12)
-        self.f_scroll = QScrollArea(); self.f_scroll.setWidgetResizable(True)
-        self.f_host = QWidget(); self.f_grid = QGridLayout(self.f_host)
-        self.f_grid.setHorizontalSpacing(14); self.f_grid.setVerticalSpacing(8)
-        self.f_scroll.setWidget(self.f_host); fl.addWidget(self.f_scroll)
-        root.addWidget(filt)
-
-        # campos filtráveis
-        self.fcols = [
-            ("PLACA","Placa"),
-            ("MOTORISTA","Motorista"),
-            ("COMBUSTIVEL","Combustível"),
-            ("CIDADE_UF","Cidade/UF"),
-            ("ESTABELECIMENTO","Estabelecimento"),
-            ("RESPONSAVEL","Responsável"),
-            ("SERVICO","Serviço"),
-            ("PAGAMENTO","Pagamento"),
-            ("MODELO","Modelo"),
-            ("FAMILIA","Família"),
-            ("TIPO_FROTA","Tipo Frota"),
-        ]
-        self.f_mode = {}; self.f_ms = {}; self.f_texts = {}
-        self._mount_col_filters()
+        # Filtro GLOBAL único
+        self.global_bar = GlobalFilterBar("Filtro global:")
+        self.global_bar.changed.connect(self._apply_filters_and_refresh)
+        root.addWidget(self.global_bar)
 
         # Abas / Cenários
         from PyQt6.QtWidgets import QTabWidget
@@ -655,105 +657,55 @@ class CombustivelDetalhadoWindow(QWidget):
         # GERAL
         self.tab_geral = QWidget(); vg = QVBoxLayout(self.tab_geral)
         self.tbl_geral = QTableWidget(); self._prep(self.tbl_geral, ["Placa","Abastecimentos","Litros","Valor (R$)","Km Rodados"])
-        vg.addWidget(self.tbl_geral)
-        self.tabs.addTab(self.tab_geral, "GERAL")
+        vg.addWidget(self.tbl_geral); self.tabs.addTab(self.tab_geral, "GERAL")
 
         # DATA
         self.tab_data = QWidget(); vd = QVBoxLayout(self.tab_data)
         self.tbl_data = QTableWidget(); self._prep(self.tbl_data, ["Ano-Mês","Abastecimentos","Litros","Valor (R$)"])
-        vd.addWidget(self.tbl_data)
-        self.tabs.addTab(self.tab_data, "DATA")
+        vd.addWidget(self.tbl_data); self.tabs.addTab(self.tab_data, "DATA")
 
         # PLACA
         self.tab_placa = QWidget(); vp = QVBoxLayout(self.tab_placa)
-        rowp = QHBoxLayout(); rowp.addWidget(QLabel("Placa:"))
         self.cb_placa = QComboBox(); self.cb_placa.currentTextChanged.connect(self._refresh_placa)
-        rowp.addWidget(self.cb_placa); rowp.addStretch(1); vp.addLayout(rowp)
+        rowp = QHBoxLayout(); rowp.addWidget(QLabel("Placa:")); rowp.addWidget(self.cb_placa); rowp.addStretch(1); vp.addLayout(rowp)
         self.lbl_placa_metrics = QLabel(""); vp.addWidget(self.lbl_placa_metrics)
         self.tbl_placa = QTableWidget(); self._prep(self.tbl_placa, ["Data","Motorista","Combustível","Litros","Vl/Litro","Valor (R$)","Estabelecimento","Cidade/UF"])
-        vp.addWidget(self.tbl_placa)
-        self.tabs.addTab(self.tab_placa, "PLACA")
-
-        # MOTORISTA
-        self.tab_motor = QWidget(); vm = QVBoxLayout(self.tab_motor)
-        rowm = QHBoxLayout(); rowm.addWidget(QLabel("Motorista:"))
-        self.cb_motor = QComboBox(); self.cb_motor.currentTextChanged.connect(self._refresh_motorista)
-        rowm.addWidget(self.cb_motor); rowm.addStretch(1); vm.addLayout(rowm)
-        self.lbl_motor_metrics = QLabel(""); vm.addWidget(self.lbl_motor_metrics)
-        self.tbl_motor = QTableWidget(); self._prep(self.tbl_motor, ["Placa","Abastecimentos","Litros","Valor (R$)"])
-        vm.addWidget(self.tbl_motor)
-        self.tabs.addTab(self.tab_motor, "MOTORISTA")
+        vp.addWidget(self.tbl_placa); self.tabs.addTab(self.tab_placa, "PLACA")
 
         # COMBUSTÍVEL
         self.tab_comb = QWidget(); vc = QVBoxLayout(self.tab_comb)
         self.tbl_comb = QTableWidget(); self._prep(self.tbl_comb, ["Combustível","Abastecimentos","Litros","Preço Médio (R$/L)","Valor (R$)"])
-        vc.addWidget(self.tbl_comb)
-        self.tabs.addTab(self.tab_comb, "COMBUSTÍVEL")
+        vc.addWidget(self.tbl_comb); self.tabs.addTab(self.tab_comb, "COMBUSTÍVEL")
 
         # CIDADE/UF
         self.tab_cid = QWidget(); vci = QVBoxLayout(self.tab_cid)
         self.tbl_cid = QTableWidget(); self._prep(self.tbl_cid, ["Cidade/UF","Abastecimentos","Litros","Valor (R$)"])
-        vci.addWidget(self.tbl_cid)
-        self.tabs.addTab(self.tab_cid, "CIDADE/UF")
+        vci.addWidget(self.tbl_cid); self.tabs.addTab(self.tab_cid, "CIDADE/UF")
 
         # ESTABELECIMENTO
         self.tab_est = QWidget(); ve = QVBoxLayout(self.tab_est)
         self.tbl_est = QTableWidget(); self._prep(self.tbl_est, ["Estabelecimento","Abastecimentos","Litros","Valor (R$)"])
-        ve.addWidget(self.tbl_est)
-        self.tabs.addTab(self.tab_est, "ESTABELECIMENTO")
+        ve.addWidget(self.tbl_est); self.tabs.addTab(self.tab_est, "ESTABELECIMENTO")
 
         # RESPONSÁVEL
         self.tab_resp = QWidget(); vr = QVBoxLayout(self.tab_resp)
         self.tbl_resp = QTableWidget(); self._prep(self.tbl_resp, ["Responsável","Abastecimentos","Litros","Valor (R$)"])
-        vr.addWidget(self.tbl_resp)
-        self.tabs.addTab(self.tab_resp, "RESPONSÁVEL")
+        vr.addWidget(self.tbl_resp); self.tabs.addTab(self.tab_resp, "RESPONSÁVEL")
 
-        # sinais de tempo
+        # sinais
         self.de_ini.dateChanged.connect(self._dates_changed)
         self.de_fim.dateChanged.connect(self._dates_changed)
         self.sl_ini.valueChanged.connect(self._sliders_changed)
         self.sl_fim.valueChanged.connect(self._sliders_changed)
 
-    def _mount_col_filters(self):
-        # limpa
-        while self.f_grid.count():
-            item = self.f_grid.takeAt(0)
-            w = item.widget()
-            if w: w.setParent(None)
-
-        for i, (col, label) in enumerate(self.fcols):
-            box = QFrame(); vb = QVBoxLayout(box)
-            vb.addWidget(QLabel(label))
-
-            # modo + multi select
-            h1 = QHBoxLayout()
-            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
-            ms = CheckableComboBox(self.df_base.get(col, pd.Series([], dtype=str)).astype(str).dropna().unique())
-            mode.currentTextChanged.connect(self._apply_filters_and_refresh)
-            ms.changed.connect(self._apply_filters_and_refresh)
-            h1.addWidget(mode); h1.addWidget(ms)
-            vb.addLayout(h1)
-
-            # filtro de texto (com + para mais caixas)
-            h2 = QHBoxLayout()
-            le = QLineEdit(); le.setPlaceholderText(f"Filtrar {label}...")
-            le.textChanged.connect(self._apply_filters_and_refresh)
-            add = QPushButton("+"); add.setFixedWidth(28)
-            h2.addWidget(le); h2.addWidget(add); vb.addLayout(h2)
-
-            def _add_more(_=None, col_=col, vb_=vb):
-                le2 = QLineEdit(); le2.setPlaceholderText(f"Filtrar {label}...")
-                le2.textChanged.connect(self._apply_filters_and_refresh)
-                vb_.addWidget(le2)
-                self.f_texts[col_].append(le2)
-            add.clicked.connect(_add_more)
-
-            self.f_grid.addWidget(box, i//3, i%3)
-            self.f_mode[col] = mode
-            self.f_ms[col] = ms
-            self.f_texts[col] = [le]
+    # ========================= Util/UI =========================
+    @staticmethod
+    def _to_qdate(ts):
+        from PyQt6.QtCore import QDate
+        return QDate(int(ts.year), int(ts.month), int(ts.day))
 
     def _prep(self, tbl, headers):
+        from PyQt6.QtWidgets import QHeaderView
         tbl.setAlternatingRowColors(True)
         tbl.setSortingEnabled(True)
         tbl.horizontalHeader().setSortIndicatorShown(True)
@@ -762,7 +714,7 @@ class CombustivelDetalhadoWindow(QWidget):
         tbl.setColumnCount(len(headers))
         tbl.setHorizontalHeaderLabels(headers)
 
-    # ------- tempo
+    # ========================= Tempo =========================
     def _sliders_changed(self):
         if not self._dates:
             return
@@ -770,12 +722,12 @@ class CombustivelDetalhadoWindow(QWidget):
         b = max(self.sl_ini.value(), self.sl_fim.value())
         da = self._dates[a]; db = self._dates[b]
         self.de_ini.blockSignals(True); self.de_fim.blockSignals(True)
-        self.de_ini.setDate(QDate(da.year, da.month, da.day))
-        self.de_fim.setDate(QDate(db.year, db.month, db.day))
+        self.de_ini.setDate(self._to_qdate(da)); self.de_fim.setDate(self._to_qdate(db))
         self.de_ini.blockSignals(False); self.de_fim.blockSignals(False)
         self._apply_filters_and_refresh()
 
     def _dates_changed(self):
+        import pandas as pd
         if not self._dates:
             self._apply_filters_and_refresh()
             return
@@ -790,8 +742,12 @@ class CombustivelDetalhadoWindow(QWidget):
         self.sl_ini.blockSignals(False); self.sl_fim.blockSignals(False)
         self._apply_filters_and_refresh()
 
-    # ------- aplicação de filtros
+    # ========================= Filtro + Refresh =========================
     def _apply_filters_and_refresh(self):
+        import pandas as pd
+        from utils import df_apply_global_texts
+
+        # período
         q0, q1 = self.de_ini.date(), self.de_fim.date()
         t0 = pd.Timestamp(q0.year(), q0.month(), q0.day())
         t1 = pd.Timestamp(q1.year(), q1.month(), q1.day())
@@ -801,40 +757,9 @@ class CombustivelDetalhadoWindow(QWidget):
         mask = (df["DT"].notna()) & (df["DT"] >= a) & (df["DT"] <= b)
         df = df[mask].reset_index(drop=True)
 
-        # Filtros por coluna
-        for col, _label in self.fcols:
-            if col not in df.columns:
-                continue
-            mode = self.f_mode[col].currentText()
-            if mode == "Excluir vazios":
-                df = df[df[col].astype(str).str.strip() != ""]
-            elif mode == "Somente vazios":
-                df = df[df[col].astype(str).str.strip() == ""]
-
-            sels = [s for s in self.f_ms[col].selected_values() if s]
-            if sels:
-                df = df[df[col].astype(str).isin(sels)]
-
-            termos = [le.text().strip().lower() for le in self.f_texts[col] if le.text().strip()]
-            if termos:
-                s = df[col].astype(str).str.lower()
-                import re as _re
-                rgx = "|".join(map(_re.escape, termos))
-                df = df[s.str.contains(rgx, na=False)]
-
-        # atualizar listas mantendo seleção
-        for col, _label in self.fcols:
-            ms = self.f_ms[col]
-            if col not in df.columns:
-                continue
-            current_sel = ms.selected_values()
-            ms.set_values(sorted([x for x in df[col].astype(str).dropna().unique() if x]))
-            if current_sel:
-                for i in range(ms.count()):
-                    if ms.itemText(i) in current_sel:
-                        idx = ms.model().index(i, 0)
-                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
-                ms._update_text()
+        # texto global (todas as colunas)
+        texts = self.global_bar.values()
+        df = df_apply_global_texts(df, texts)
 
         self.df_f = df
 
@@ -845,21 +770,20 @@ class CombustivelDetalhadoWindow(QWidget):
 
         # combos dependentes
         placas = sorted([x for x in self.df_f["PLACA"].astype(str).unique() if x])
-        motors = sorted([x for x in self.df_f.get("MOTORISTA", pd.Series([], dtype=str)).astype(str).unique() if x])
         self.cb_placa.blockSignals(True); self.cb_placa.clear(); self.cb_placa.addItems(placas); self.cb_placa.blockSignals(False)
-        self.cb_motor.blockSignals(True); self.cb_motor.clear(); self.cb_motor.addItems(motors); self.cb_motor.blockSignals(False)
 
         # cenários
         self._refresh_geral()
         self._refresh_data()
         self._refresh_placa()
-        self._refresh_motorista()
         self._refresh_combustivel()
         self._refresh_cidade()
         self._refresh_estab()
         self._refresh_resp()
 
     def _fill(self, tbl, rows):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QTableWidgetItem
         tbl.setRowCount(len(rows))
         for i, r in enumerate(rows):
             for j, v in enumerate(r):
@@ -867,35 +791,32 @@ class CombustivelDetalhadoWindow(QWidget):
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 tbl.setItem(i, j, it)
         tbl.resizeColumnsToContents(); tbl.resizeRowsToContents()
+        tbl.horizontalHeader().setStretchLastSection(True)
 
-    # ------- cenários
+    # ========================= Cenários =========================
     def _refresh_geral(self):
         d = self.df_f.copy()
         if d.empty:
             self._fill(self.tbl_geral, []); return
         g = d.groupby("PLACA", dropna=False).agg(
-            QT=("PLACA", "count"),
-            LT=("LITROS_NUM", "sum"),
-            VL=("VALOR_NUM", "sum"),
-            KM=("KM_RODADOS_NUM","sum")
+            QT=("PLACA","count"), LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum"), KM=("KM_RODADOS_NUM","sum")
         ).reset_index().sort_values(["VL","LT","QT"], ascending=False).head(10)
         rows = [[r["PLACA"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}", f"{r['KM']:.0f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_geral, rows)
 
     def _refresh_data(self):
+        import pandas as pd
         d = self.df_f.copy()
         if d.empty:
             self._fill(self.tbl_data, []); return
         d["YM"] = d["DT"].dt.to_period("M").astype(str)
-        g = d.groupby("YM").agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL=("VALOR_NUM","sum")
-        ).reset_index().sort_values("YM")
+        g = d.groupby("YM").agg(QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")).reset_index().sort_values("YM")
         rows = [[r["YM"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_data, rows)
 
     def _refresh_placa(self):
+        import pandas as pd
         placa = self.cb_placa.currentText().strip()
         d = self.df_f if not placa else self.df_f[self.df_f["PLACA"].astype(str) == placa]
         if d.empty:
@@ -913,8 +834,7 @@ class CombustivelDetalhadoWindow(QWidget):
         for _, r in d.sort_values("DT").iterrows():
             rows.append([
                 r["DT"].strftime("%d/%m/%Y %H:%M") if pd.notna(r["DT"]) else "",
-                r.get("MOTORISTA",""),
-                r.get("COMBUSTIVEL",""),
+                r.get("MOTORISTA",""), r.get("COMBUSTIVEL",""),
                 f"{float(r.get('LITROS_NUM',0)):.2f}",
                 f"{float(r.get('VL_LITRO_NUM',0)):.2f}",
                 f"{float(r.get('VALOR_NUM',0)):.2f}",
@@ -923,31 +843,13 @@ class CombustivelDetalhadoWindow(QWidget):
             ])
         self._fill(self.tbl_placa, rows)
 
-    def _refresh_motorista(self):
-        nome = self.cb_motor.currentText().strip()
-        d = self.df_f if not nome else self.df_f[self.df_f.get("MOTORISTA","").astype(str) == nome]
-        if d.empty:
-            self.lbl_motor_metrics.setText(""); self._fill(self.tbl_motor, []); return
-        total_l = d["LITROS_NUM"].sum()
-        total_v = d["VALOR_NUM"].sum()
-        self.lbl_motor_metrics.setText(f"Abastecimentos: {len(d)} | Litros: {total_l:.2f} | Valor: R$ {total_v:.2f}")
-        g = d.groupby("PLACA", dropna=False).agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL=("VALOR_NUM","sum")
-        ).reset_index().sort_values(["VL","LT","QT"], ascending=False)
-        rows = [[r["PLACA"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill(self.tbl_motor, rows)
-
     def _refresh_combustivel(self):
         d = self.df_f.copy()
         if d.empty:
             self._fill(self.tbl_comb, []); return
         g = d.groupby("COMBUSTIVEL", dropna=False).agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL_MED=("VL_LITRO_NUM","mean"),
-            VL=("VALOR_NUM","sum")
+            QT=("PLACA","count"), LT=("LITROS_NUM","sum"),
+            VL_MED=("VL_LITRO_NUM","mean"), VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("COMBUSTIVEL",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL_MED']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_comb, rows)
@@ -957,9 +859,7 @@ class CombustivelDetalhadoWindow(QWidget):
         if d.empty:
             self._fill(self.tbl_cid, []); return
         g = d.groupby("CIDADE_UF", dropna=False).agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL=("VALOR_NUM","sum")
+            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("CIDADE_UF",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_cid, rows)
@@ -969,9 +869,7 @@ class CombustivelDetalhadoWindow(QWidget):
         if d.empty:
             self._fill(self.tbl_est, []); return
         g = d.groupby("ESTABELECIMENTO", dropna=False).agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL=("VALOR_NUM","sum")
+            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False).head(50)
         rows = [[r.get("ESTABELECIMENTO",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_est, rows)
@@ -986,17 +884,13 @@ class CombustivelDetalhadoWindow(QWidget):
         if d.empty:
             self._fill(self.tbl_resp, []); return
         g = d.groupby("RESP_X", dropna=False).agg(
-            QT=("PLACA","count"),
-            LT=("LITROS_NUM","sum"),
-            VL=("VALOR_NUM","sum")
+            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("RESP_X",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
         self._fill(self.tbl_resp, rows)
 
 
-# =============================================================================
-# MENU de Combustível (duas opções)
-# =============================================================================
+
 class CombustivelMenu(QWidget):
     """
     Menu com 2 botões:

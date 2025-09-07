@@ -1,4 +1,3 @@
-# condutor.py (NOVO ARQUIVO COMPLETO)
 import os, re
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,16 +14,11 @@ from utils import apply_shadow, GlobalFilterBar, df_apply_global_texts
 
 
 class _Sig(QObject):
-    ready = pyqtSignal(str, pd.DataFrame)   # tag, df
-    error = pyqtSignal(str)                 # msg
+    ready = pyqtSignal(str, pd.DataFrame)
+    error = pyqtSignal(str)
 
 
 class CondutorWindow(QWidget):
-    """
-    Busca + sugestão de nomes (responsáveis/condutores) a partir das planilhas configuradas.
-    Ao clicar "Carregar", consulta Multas, Extratos e (se disponível) Detalhamento em threads,
-    preenchendo a UI gradualmente. Controle de período e filtro global incluídos.
-    """
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Condutor — Busca Integrada")
@@ -32,27 +26,19 @@ class CondutorWindow(QWidget):
         self.sig = _Sig()
         self.sig.ready.connect(self._on_chunk_ready)
         self.sig.error.connect(self._on_error)
-
-        # Caminhos
         self.p_multas = cfg_get("geral_multas_csv")
         self.p_extrato = cfg_get("extrato_geral_path")
         self.p_simpl = cfg_get("extrato_simplificado_path")
         self.p_det = cfg_get("detalhamento_path")
-
-        # caches
         self.names_model = QStandardItemModel(self)
         self._df_m = pd.DataFrame()
         self._df_e = pd.DataFrame()
         self._df_d = pd.DataFrame()
-
         self._build_ui()
         self._build_completer_source()
 
-    # ---------------- UI ----------------
     def _build_ui(self):
         root = QVBoxLayout(self)
-
-        # Título
         head = QFrame(); head.setObjectName("glass"); apply_shadow(head, radius=18, blur=60, color=QColor(0,0,0,60))
         hv = QVBoxLayout(head); hv.setContentsMargins(18,18,18,18)
         t = QLabel("Condutor — Busca Integrada"); t.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -60,14 +46,11 @@ class CondutorWindow(QWidget):
         hv.addWidget(t)
         root.addWidget(head)
 
-        # Barra de busca
         bar = QFrame(); bar.setObjectName("card"); apply_shadow(bar, radius=16)
         bl = QGridLayout(bar)
         self.ed_nome = QLineEdit(); self.ed_nome.setPlaceholderText("Digite um nome (ou escolha uma sugestão)…")
         self.btn_carregar = QPushButton("Carregar informações")
         self.btn_carregar.setMinimumHeight(40)
-
-        # período
         self.de_ini = QDateEdit(); self.de_fim = QDateEdit()
         for de in (self.de_ini, self.de_fim):
             de.setCalendarPopup(True); de.setDisplayFormat(DATE_FORMAT)
@@ -77,22 +60,16 @@ class CondutorWindow(QWidget):
         self.de_fim.setDate(QDate(today.year, today.month, today.day))
         self.de_ini.dateChanged.connect(self._apply_filters)
         self.de_fim.dateChanged.connect(self._apply_filters)
-
-        # filtro global
         self.global_bar = GlobalFilterBar("Filtro global:")
         self.global_bar.changed.connect(self._apply_filters)
-
         bl.addWidget(QLabel("Nome do Condutor/Responsável:"), 0, 0)
         bl.addWidget(self.ed_nome, 0, 1, 1, 2)
         bl.addWidget(self.btn_carregar, 0, 3)
-
         bl.addWidget(QLabel("Início:"), 1, 0); bl.addWidget(self.de_ini, 1, 1)
         bl.addWidget(QLabel("Fim:"), 1, 2); bl.addWidget(self.de_fim, 1, 3)
-
         bl.addWidget(self.global_bar, 2, 0, 1, 4)
         root.addWidget(bar)
 
-        # KPIs
         cards = QFrame(); cards.setObjectName("glass"); apply_shadow(cards, radius=16, blur=60, color=QColor(0,0,0,60))
         cg = QGridLayout(cards)
         self.k_multas = QLabel("0"); self.k_valor = QLabel("0,00")
@@ -105,16 +82,12 @@ class CondutorWindow(QWidget):
             cg.addWidget(val, 1, i)
         root.addWidget(cards)
 
-        # Tabelas
         self.tbl_m = self._mk_table(["FLUIG","Data","Placa","Órgão","Infração","Valor (R$)"])
         self.tbl_e = self._mk_table(["Data","Placa","Motorista","Combustível","Litros","R$/L","R$","Estabelecimento","Cidade/UF"])
-
         wrap = QHBoxLayout()
         wrap.addWidget(self.tbl_m, 1)
         wrap.addWidget(self.tbl_e, 1)
         root.addLayout(wrap)
-
-        # eventos
         self.btn_carregar.clicked.connect(self._start_load_for_name)
 
     def _mk_table(self, headers):
@@ -128,12 +101,8 @@ class CondutorWindow(QWidget):
         t.setHorizontalHeaderLabels(headers)
         return t
 
-    # ---------------- Auto-completar ----------------
     def _build_completer_source(self):
-        """Monta um QCompleter combinando nomes de várias fontes (responsáveis/condutores, ignorando vazios)."""
         names = set()
-
-        # Extrato Simplificado: Responsável
         if self.p_simpl and os.path.exists(self.p_simpl):
             try:
                 ds = pd.read_excel(self.p_simpl, dtype=str).fillna("")
@@ -143,8 +112,6 @@ class CondutorWindow(QWidget):
                         break
             except Exception:
                 pass
-
-        # Multas: INFRATOR / NOME
         if self.p_multas and os.path.exists(self.p_multas):
             try:
                 dm = pd.read_csv(self.p_multas, dtype=str).fillna("")
@@ -153,8 +120,6 @@ class CondutorWindow(QWidget):
                         names |= set([x for x in dm[cand].astype(str) if x.strip()])
             except Exception:
                 pass
-
-        # Extrato Geral: NOME MOTORISTA
         if self.p_extrato and os.path.exists(self.p_extrato):
             try:
                 de = pd.read_excel(self.p_extrato, dtype=str).fillna("")
@@ -164,34 +129,27 @@ class CondutorWindow(QWidget):
                         break
             except Exception:
                 pass
-
-        # cria modelo
         self.names_model.clear()
         for n in sorted(names):
             self.names_model.appendRow(QStandardItem(n))
-
         comp = QCompleter(self.names_model, self)
         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         comp.setFilterMode(Qt.MatchFlag.MatchContains)
         self.ed_nome.setCompleter(comp)
 
-    # ---------------- Execução paralela ----------------
     def _start_load_for_name(self):
         target = self.ed_nome.text().strip()
         if not target:
             QMessageBox.information(self, "Condutor", "Informe um nome ou escolha uma sugestão.")
             return
-
         self._df_m = pd.DataFrame()
         self._df_e = pd.DataFrame()
         self._df_d = pd.DataFrame()
-
         tasks = []
         with ThreadPoolExecutor(max_workers=3) as ex:
             tasks.append(ex.submit(self._load_multas_for, target))
             tasks.append(ex.submit(self._load_extrato_for, target))
             tasks.append(ex.submit(self._load_detalhamento_for, target))
-
             for fut in as_completed(tasks):
                 try:
                     tag, df = fut.result()
@@ -201,22 +159,17 @@ class CondutorWindow(QWidget):
                     self.sig.ready.emit(tag, df)
                 except Exception as e:
                     self.sig.error.emit(str(e))
-
-        # aplica filtros iniciais
         self._apply_filters()
 
     def _load_multas_for(self, name: str):
-        import pandas as pd, re
         if not self.p_multas or not os.path.exists(self.p_multas):
             return "M", pd.DataFrame()
         df = pd.read_csv(self.p_multas, dtype=str).fillna("")
-        # condutor
         cond = None
         for c in ("INFRATOR","NOME","CONDUTOR"):
             if c in df.columns: cond = c; break
         if cond:
             df = df[df[cond].astype(str).str.contains(re.escape(name), case=False, na=False)]
-        # valor/datas
         def _num(s):
             s = str(s).strip()
             if not s: return 0.0
@@ -236,11 +189,9 @@ class CondutorWindow(QWidget):
         return "M", df
 
     def _load_extrato_for(self, name: str):
-        import pandas as pd, re
         if not self.p_extrato or not os.path.exists(self.p_extrato):
             return "E", pd.DataFrame()
         df = pd.read_excel(self.p_extrato, dtype=str).fillna("")
-        # motorista/responsável
         hit = False
         for c in ("NOME MOTORISTA","Motorista","MOTORISTA"):
             if c in df.columns:
@@ -252,8 +203,6 @@ class CondutorWindow(QWidget):
                 if c in df.columns:
                     df = df[df[c].astype(str).str.contains(re.escape(name), case=False, na=False)]
                     break
-
-        # normaliza + números/datas
         m = {
             "DATA TRANSACAO":"DATA_TRANSACAO","PLACA":"PLACA","NOME MOTORISTA":"MOTORISTA",
             "TIPO COMBUSTIVEL":"COMBUSTIVEL","LITROS":"LITROS","VL/LITRO":"VL_LITRO",
@@ -264,7 +213,6 @@ class CondutorWindow(QWidget):
         df = df.rename(columns=use)
         if "CIDADE_UF" not in df.columns:
             df["CIDADE_UF"] = df.get("CIDADE","").astype(str).str.strip()+"/"+df.get("UF","").astype(str).str.strip()
-
         def _dt(s): return pd.to_datetime(str(s), dayfirst=True, errors="coerce")
         def _num(s):
             s = str(s).strip()
@@ -276,21 +224,18 @@ class CondutorWindow(QWidget):
                 s = s.replace(",", ".")
             try: return float(s)
             except: return 0.0
-
         df["DT_C"] = df.get("DATA_TRANSACAO","").map(_dt)
         for c_src, c_num in [("LITROS","LITROS_NUM"),("VL_LITRO","VL_LITRO_NUM"),("VALOR","VALOR_NUM")]:
             df[c_num] = df.get(c_src, "").map(_num)
         return "E", df
 
     def _load_detalhamento_for(self, name: str):
-        import pandas as pd, re
         if not self.p_det or not os.path.exists(self.p_det):
             return "D", pd.DataFrame()
         try:
             df = pd.read_excel(self.p_det, dtype=str).fillna("")
         except Exception:
             return "D", pd.DataFrame()
-        # tenta colunas de responsável/condutor
         cols = [c for c in df.columns if any(k in c.upper() for k in ("RESPONS", "CONDUTOR", "MOTORISTA", "INFRATOR", "NOME"))]
         if cols:
             m = pd.Series(False, index=df.index)
@@ -299,35 +244,26 @@ class CondutorWindow(QWidget):
             df = df[m]
         return "D", df
 
-    # ---------------- Filtros + Refresh ----------------
     def _apply_filters(self):
         import pandas as pd
-        # período
         q0, q1 = self.de_ini.date(), self.de_fim.date()
         t0 = pd.Timestamp(q0.year(), q0.month(), q0.day())
         t1 = pd.Timestamp(q1.year(), q1.month(), q1.day())
         a, b = (t0, t1) if t0 <= t1 else (t1, t0)
-
         dm = self._df_m.copy()
         de = self._df_e.copy()
-        # aplica período + filtro global (todas colunas)
         if not dm.empty and "DT_M" in dm:
             dm = dm[(dm["DT_M"].notna()) & (dm["DT_M"] >= a) & (dm["DT_M"] <= b)]
             dm = df_apply_global_texts(dm, self.global_bar.values())
         if not de.empty and "DT_C" in de:
             de = de[(de["DT_C"].notna()) & (de["DT_C"] >= a) & (de["DT_C"] <= b)]
             de = df_apply_global_texts(de, self.global_bar.values())
-
-        # KPIs
         vm = float(dm["VALOR_NUM"].sum()) if not dm.empty else 0.0
         self.k_multas.setText(str(len(dm)))
         self.k_valor.setText(f"{vm:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
-
         self.k_abast.setText(str(len(de)))
         self.k_litros.setText(f"{float(de.get('LITROS_NUM', pd.Series()).sum() or 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
         self.k_custo.setText(f"{float(de.get('VALOR_NUM', pd.Series()).sum() or 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
-
-        # tabelas
         self._fill_multas(dm)
         self._fill_extrato(de)
 
@@ -385,9 +321,7 @@ class CondutorWindow(QWidget):
         tbl.horizontalHeader().setStretchLastSection(True)
         tbl.setSortingEnabled(True)
 
-    # ---------------- Sinais ----------------
     def _on_chunk_ready(self, tag: str, df: pd.DataFrame):
-        # opcional: poderia atualizar status por bloco
         pass
 
     def _on_error(self, msg: str):

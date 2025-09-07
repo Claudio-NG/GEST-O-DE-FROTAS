@@ -17,10 +17,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===============================
-# TEMA / CORES (HEX) DO SISTEMA
-# ===============================
-
 THEME = {
     "primary": "#0B1E3B",
     "accent": "#D72638",
@@ -47,13 +43,10 @@ PERIOD_LABELS = {
     "PERSONALIZADO": "Personalizado",
 }
 
-# =========================================================
-# IMPORTAÇÕES DE CONSTANTES DO PROJETO (com defaults seguros)
-# =========================================================
 try:
     from gestao_frota_single import (
         DATE_COLS,
-        STATUS_COLOR,          # dict[str, QColor]
+        STATUS_COLOR,
         GERAL_MULTAS_CSV,
         MULTAS_ROOT,
         PASTORES_DIR,
@@ -65,18 +58,10 @@ except Exception:
     GERAL_MULTAS_CSV = str(Path("data/geral_multas.csv"))
     MULTAS_ROOT = str(Path("data/MULTAS"))
     PASTORES_DIR = str(Path("data/PASTORES"))
-
-    def cfg_get(*args, **kwargs):  # fallback
+    def cfg_get(*args, **kwargs):
         return None
-
-    def cfg_set(*args, **kwargs):  # fallback
+    def cfg_set(*args, **kwargs):
         return None
-
-    # STATUS_COLOR (QColor) será criado mais abaixo se PyQt estiver disponível
-
-# ======================
-# NORMALIZAÇÕES DE TEXTO
-# ======================
 
 def _to_str(x: Any) -> str:
     if x is None or (isinstance(x, float) and math.isnan(x)):
@@ -122,10 +107,6 @@ def normalize_columns_upper(df: pd.DataFrame) -> pd.DataFrame:
 def ensure_datetime(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce", dayfirst=True)
 
-# ===========
-# PERÍODOS
-# ===========
-
 def _today() -> dt.date:
     return dt.date.today()
 
@@ -134,23 +115,16 @@ def period_presets(today: Optional[dt.date] = None) -> Dict[str, Tuple[dt.date, 
     first_month = d.replace(day=1)
     next_month = (first_month + dt.timedelta(days=32)).replace(day=1)
     mes_atual = (first_month, next_month - dt.timedelta(days=1))
-
     start_3 = (first_month - dt.timedelta(days=92)).replace(day=1)
     ult_3 = (start_3, d)
-
     ano_inicio = d.replace(month=1, day=1)
     ano_atual = (ano_inicio, d)
-
     return {
         "MES_ATUAL": mes_atual,
         "ULTIMOS_3_MESES": ult_3,
         "ANO_ATUAL": ano_atual,
         "PERSONALIZADO": (None, None),
     }
-
-# ==================
-# CACHE DE DATAFRAME
-# ==================
 
 class DataCache:
     def __init__(self):
@@ -174,13 +148,11 @@ class DataCache:
             raise FileNotFoundError(str(p))
         mtime = p.stat().st_mtime
         key = self._key(path, sheet_name)
-
         with self._lock:
             if key in self._store:
                 cached_mtime, cached_df = self._store[key]
                 if abs(cached_mtime - mtime) < 1e-6:
                     return cached_df.copy()
-
         ext = p.suffix.lower()
         if ext in (".xlsx", ".xls"):
             df = pd.read_excel(p, sheet_name=sheet_name, dtype=dtype, engine="openpyxl")
@@ -188,28 +160,20 @@ class DataCache:
             df = pd.read_csv(p, dtype=dtype, keep_default_na=keep_default_na)
         else:
             raise ValueError(f"Extensão não suportada: {ext}")
-
         if parse_dates:
             for col in parse_dates:
                 if col in df.columns:
                     df[col] = ensure_datetime(df[col])
-
         if normalize_cols:
             df = normalize_columns_upper(df)
-
         with self._lock:
             self._store[key] = (mtime, df.copy())
-
         return df.copy()
 
 DATA_CACHE = DataCache()
 
 def load_df(path: str, **kwargs) -> pd.DataFrame:
     return DATA_CACHE.load_df_cached(path, **kwargs)
-
-# ==============
-# EXECUTOR (IO)
-# ==============
 
 def run_tasks(
     tasks: Dict[str, Callable[[], Any]],
@@ -235,10 +199,6 @@ def run_tasks(
                 else:
                     results[name] = e
     return results
-
-# =========
-# EVENT BUS
-# =========
 
 class EventBus:
     def __init__(self):
@@ -274,10 +234,6 @@ class EventBus:
 
 EVENT_BUS = EventBus()
 EVENT_BUS.start()
-
-# ======================
-# HELPERS PARA RELATÓRIO
-# ======================
 
 def apply_period(df: pd.DataFrame, col_data: str, start: Optional[dt.date], end: Optional[dt.date]) -> pd.DataFrame:
     if df is None or df.empty or col_data not in df.columns:
@@ -323,9 +279,6 @@ def export_to_excel(df: pd.DataFrame, path: str, sheet_name: str = "Dados") -> s
         df.to_excel(xw, index=False, sheet_name=sheet_name)
     return str(p)
 
-# ==========================
-# PYQT6 UI HELPERS E CORES
-# ==========================
 try:
     from PyQt6.QtCore import QDate, Qt, pyqtSignal
     from PyQt6.QtGui import QColor
@@ -334,35 +287,47 @@ try:
         QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QFrame, QLineEdit,
         QSplitter, QGroupBox, QWidget
     )
-
-    # STATUS_COLOR (QColor) fallback, caso não tenha vindo do gestao_frota_single
     try:
         STATUS_COLOR  # noqa
     except NameError:
         STATUS_COLOR = {k: QColor(v) for k, v in STATUS_COLORS_HEX.items()}
+    _aug = {}
+    for k, v in STATUS_COLOR.items():
+        _aug[k] = v
+        _aug[str(k).upper()] = v
+        _aug[str(k).capitalize()] = v
+    _aug.setdefault("(SEM STATUS)", QColor("#9E9E9E"))
+    STATUS_COLOR = _aug
 
     class CheckableComboBox(QComboBox):
         changed = pyqtSignal()
-        def __init__(self, values):
+        def __init__(self, values=None):
             super().__init__()
-            self.set_values(values)
+            self.set_items(values or [])
             self.view().pressed.connect(self._toggle)
             self._update_text()
         def set_values(self, values):
+            self.set_items(values)
+        def set_items(self, values):
             self.blockSignals(True)
             self.clear()
-            vals = sorted({str(v) for v in values if str(v).strip()})
+            vals = [str(v) for v in values]
+            for i, v in enumerate(vals):
+                self.addItem(v)
+                idx = self.model().index(i, 0)
+                self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
             if not vals:
                 self.addItem("(vazio)")
                 idx = self.model().index(0, 0)
                 self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
-            else:
-                for i, v in enumerate(vals):
-                    self.addItem(v)
-                    idx = self.model().index(i, 0)
-                    self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
             self.blockSignals(False)
             self._update_text()
+        def set_all_checked(self, flag: bool):
+            for i in range(self.count()):
+                idx = self.model().index(i, 0)
+                self.model().setData(idx, Qt.CheckState.Checked if flag else Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+            self._update_text()
+            self.changed.emit()
         def _toggle(self, index):
             st = self.model().data(index, Qt.ItemDataRole.CheckStateRole)
             ns = Qt.CheckState.Unchecked if st == Qt.CheckState.Checked else Qt.CheckState.Checked
@@ -379,18 +344,27 @@ try:
             return out
         def _update_text(self):
             n = len(self.selected_values())
+            total = self.count()
             self.setEditable(True)
             self.lineEdit().setReadOnly(True)
-            self.lineEdit().setText("Todos" if n == 0 else f"{n} selecionados")
+            if total == 0:
+                txt = "(vazio)"
+            elif n == 0:
+                txt = "Nenhum"
+            elif n == total:
+                txt = "Todos"
+            else:
+                txt = f"{n} selecionados"
+            self.lineEdit().setText(txt)
             self.setEditable(False)
 
     def _paint_status(item, status):
-        if status:
-            bg = STATUS_COLOR.get(status)
-            if bg:
-                item.setBackground(bg)
-                yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114) / 1000
-                item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
+        s = normalize_status(status)
+        q = STATUS_COLOR.get(s) or STATUS_COLOR.get(str(status)) or STATUS_COLOR.get(str(status).capitalize())
+        if q:
+            item.setBackground(q)
+            yiq = (q.red()*299 + q.green()*587 + q.blue()*114) / 1000
+            item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
 
     def parse_permissions(perms):
         if isinstance(perms, list):
@@ -419,9 +393,6 @@ try:
         except Exception:
             pass
 
-    # -----------------------
-    # Data helpers (QDate etc)
-    # -----------------------
     def _parse_dt_any(s):
         s = str(s).strip()
         if not s:
@@ -441,9 +412,6 @@ try:
     def _norm(s):
         return ''.join(ch for ch in unicodedata.normalize('NFKD', str(s)) if not unicodedata.combining(ch)).lower()
 
-    # -----------------------
-    # Pastores / Multas (I/O)
-    # -----------------------
     def _pick_fase_pastores():
         base = os.path.join(PASTORES_DIR, "Notificações de Multas - Fase Pastores.xlsx")
         if os.path.exists(base):
@@ -495,9 +463,6 @@ try:
             out[c] = out[c].astype(str).str.strip()
         return out
 
-    # -----------------------
-    # CSV / Multas helpers
-    # -----------------------
     def ensure_status_cols(df, csv_path=None):
         changed = False
         for c in DATE_COLS:
@@ -522,7 +487,8 @@ try:
         return QDate()
 
     def build_multa_dir(infrator, ano, mes, placa, notificacao, fluig):
-        sub = f"{placa}_{notificao}_FLUIG({fluig})" if (notificao:=str(notificacao).strip()) else f"{placa}_FLUIG({fluig})"
+        notificacao = str(notificacao).strip()
+        sub = f"{placa}_{notificacao}_FLUIG({fluig})" if notificacao else f"{placa}_FLUIG({fluig})"
         return os.path.join(MULTAS_ROOT, str(infrator).strip(), str(ano).strip(), str(mes).strip(), sub)
 
     def gerar_geral_multas_csv(root=MULTAS_ROOT, output=GERAL_MULTAS_CSV):
@@ -545,10 +511,10 @@ try:
                             if not os.path.isdir(fdir):
                                 continue
                             parts = folder.split('_')
-                            placa = parts[0] if len(parts)>0 else ""
-                            notificacao = parts[1] if len(parts)>1 else ""
+                            placa = parts[0] if len(parts) > 0 else ""
+                            notificacao = parts[1] if len(parts) > 1 else ""
                             fluig = ""
-                            if len(parts)>2 and '(' in parts[2] and ')' in parts[2]:
+                            if len(parts) > 2 and '(' in parts[2] and ')' in parts[2]:
                                 try:
                                     fluig = parts[2].split('(')[1].split(')')[0]
                                 except Exception:
@@ -561,7 +527,7 @@ try:
                                 "NOTIFICACAO": notificacao,
                                 "FLUIG": fluig,
                                 "ORGÃO": "",
-                                "DATA INDITACAO": "",
+                                "DATA INDICAÇÃO": "",
                                 "BOLETO": "",
                                 "LANÇAMENTO NFF": "",
                                 "VALIDACAO NFF": "",
@@ -579,9 +545,6 @@ try:
                 os.makedirs(dir_path, exist_ok=True)
             gerar_geral_multas_csv()
 
-    # -----------------------
-    # Diálogos
-    # -----------------------
     class SummaryDialog(QDialog):
         def __init__(self, df):
             super().__init__()
@@ -773,9 +736,6 @@ try:
             close = QPushButton("Fechar"); close.clicked.connect(self.accept)
             v.addWidget(close)
 
-    # -----------
-    # GlobalFilter
-    # -----------
     from PyQt6.QtWidgets import QFrame as _QFrame, QHBoxLayout as _QHBoxLayout, QLineEdit as _QLineEdit, QPushButton as _QPushButton, QLabel as _QLabel
     from PyQt6.QtCore import pyqtSignal as _pyqtSignal
 
@@ -838,5 +798,4 @@ try:
         return df[mask_total].copy()
 
 except Exception:
-    # Sem PyQt: mantemos apenas funções não-UI
     pass

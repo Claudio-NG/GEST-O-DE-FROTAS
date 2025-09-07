@@ -9,13 +9,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QToolButton, QTabWidget, QSpacerItem, QSizePolicy
 )
 
-from utils import (
-    THEME, apply_shadow, period_presets, EventBus, EVENT_BUS
-)
+from utils import THEME, apply_shadow, period_presets, EventBus, EVENT_BUS
 
-# =========================
-# FILTER BAR (compacta)
-# =========================
 
 class FilterBarCompact(QFrame):
     changed = pyqtSignal()
@@ -26,9 +21,12 @@ class FilterBarCompact(QFrame):
         apply_shadow(self, radius=14)
         self._presets = period_presets()
 
-        root = QVBoxLayout(self); root.setContentsMargins(12, 12, 12, 12); root.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
-        row1 = QHBoxLayout(); row1.setSpacing(8)
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
         self.lab = QLabel(title)
         self.cmb_preset = QComboBox()
         self.cmb_preset.addItem("Mês atual", "MES_ATUAL")
@@ -36,15 +34,19 @@ class FilterBarCompact(QFrame):
         self.cmb_preset.addItem("Ano atual", "ANO_ATUAL")
         self.cmb_preset.addItem("Personalizado", "PERSONALIZADO")
 
-        self.dt_ini = QDateEdit(); self.dt_fim = QDateEdit()
+        self.dt_ini = QDateEdit()
+        self.dt_fim = QDateEdit()
         for ed in (self.dt_ini, self.dt_fim):
             ed.setCalendarPopup(True)
             ed.setDisplayFormat("dd/MM/yyyy")
             ed.setDate(QDate.currentDate())
 
         self.btn_aplicar = QPushButton("Aplicar")
-        self.btn_limpar = QToolButton(); self.btn_limpar.setText("Limpar")
-        self.btn_avancado = QToolButton(); self.btn_avancado.setText("Avançado"); self.btn_avancado.setCheckable(True)
+        self.btn_limpar = QToolButton()
+        self.btn_limpar.setText("Limpar")
+        self.btn_avancado = QToolButton()
+        self.btn_avancado.setText("Avançado")
+        self.btn_avancado.setCheckable(True)
 
         row1.addWidget(self.lab)
         row1.addWidget(self.cmb_preset)
@@ -57,7 +59,8 @@ class FilterBarCompact(QFrame):
 
         self.adv = QFrame()
         self.adv.setVisible(False)
-        adv_layout = QHBoxLayout(self.adv); adv_layout.setContentsMargins(0, 0, 0, 0)
+        adv_layout = QHBoxLayout(self.adv)
+        adv_layout.setContentsMargins(0, 0, 0, 0)
         self._adv_placeholder = QLabel("Filtros avançados (use por tela)")
         adv_layout.addWidget(self._adv_placeholder)
         adv_layout.addItem(QSpacerItem(16, 1, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -104,14 +107,16 @@ class FilterBarCompact(QFrame):
 
     def _apply_preset(self, key: str):
         if key != "PERSONALIZADO":
-            self.dt_ini.setEnabled(False); self.dt_fim.setEnabled(False)
+            self.dt_ini.setEnabled(False)
+            self.dt_fim.setEnabled(False)
             ini, fim = self._presets.get(key, (None, None))
             if ini:
                 self.dt_ini.setDate(QDate(ini.year, ini.month, ini.day))
             if fim:
                 self.dt_fim.setDate(QDate(fim.year, fim.month, fim.day))
         else:
-            self.dt_ini.setEnabled(True); self.dt_fim.setEnabled(True)
+            self.dt_ini.setEnabled(True)
+            self.dt_fim.setEnabled(True)
 
     def get_period(self) -> Tuple[str, Optional[dt.date], Optional[dt.date]]:
         key = self.cmb_preset.currentData()
@@ -119,8 +124,21 @@ class FilterBarCompact(QFrame):
         d2 = self.dt_fim.date()
         ini = dt.date(d1.year(), d1.month(), d1.day())
         fim = dt.date(d2.year(), d2.month(), d2.day())
-        return key, ini if key == "PERSONALIZADO" else self._presets[key][0], \
-               fim if key == "PERSONALIZADO" else self._presets[key][1]
+        return (
+            key,
+            ini if key == "PERSONALIZADO" else self._presets[key][0],
+            fim if key == "PERSONALIZADO" else self._presets[key][1],
+        )
+
+    def set_period(self, start: dt.date, end: dt.date):
+        self.cmb_preset.setCurrentIndex(self.cmb_preset.findData("PERSONALIZADO"))
+        self._apply_preset("PERSONALIZADO")
+        self.dt_ini.setDate(QDate(start.year, start.month, start.day))
+        self.dt_fim.setDate(QDate(end.year, end.month, end.day))
+
+    def set_preset(self, key: str):
+        idx = max(0, self.cmb_preset.findData(key))
+        self.cmb_preset.setCurrentIndex(idx)
 
     def set_advanced_widget(self, w: QWidget | None):
         lay = self.adv.layout()
@@ -134,10 +152,6 @@ class FilterBarCompact(QFrame):
             lay.addWidget(w)
         lay.addItem(QSpacerItem(16, 1, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
 
-
-# =========================
-# TAB MANAGER (chaves únicas)
-# =========================
 
 class TabManager:
     def __init__(self, tabs: QTabWidget):
@@ -168,19 +182,17 @@ class TabManager:
         return self._keys.get(key, -1)
 
 
-# =========================
-# BASE VIEW (layout padrão)
-# =========================
-
 class BaseView(QWidget):
-    periodChanged = pyqtSignal(tuple)       # (key, ini, fim)
-    generateRequested = pyqtSignal()        # botão "Aplicar"
+    periodChanged = pyqtSignal(tuple)
+    generateRequested = pyqtSignal()
 
     def __init__(self, title: str):
         super().__init__()
         self.title = title
 
-        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
         self.header = FilterBarCompact()
         self.header.changed.connect(self._emit_period)
@@ -190,12 +202,18 @@ class BaseView(QWidget):
         self.tabs.setMovable(True)
         self.tabs.setTabsClosable(False)
 
-        self.footer = QFrame(); self.footer.setObjectName("footer")
-        fl = QHBoxLayout(self.footer); fl.setContentsMargins(12, 8, 12, 8); fl.setSpacing(16)
+        self.footer = QFrame()
+        self.footer.setObjectName("footer")
+        fl = QHBoxLayout(self.footer)
+        fl.setContentsMargins(12, 8, 12, 8)
+        fl.setSpacing(16)
         self.stat_left = QLabel("")
         self.stat_mid = QLabel("")
         self.stat_right = QLabel("")
-        fl.addWidget(self.stat_left); fl.addWidget(self.stat_mid); fl.addStretch(1); fl.addWidget(self.stat_right)
+        fl.addWidget(self.stat_left)
+        fl.addWidget(self.stat_mid)
+        fl.addStretch(1)
+        fl.addWidget(self.stat_right)
 
         root.addWidget(self.header)
         root.addWidget(self.tabs, 1)
@@ -226,8 +244,6 @@ class BaseView(QWidget):
         }}
         """)
 
-    # ---- API pública da view ----
-
     def set_advanced_widget(self, w: QWidget | None):
         self.header.set_advanced_widget(w)
 
@@ -244,8 +260,6 @@ class BaseView(QWidget):
         self.stat_left.setText(left or "")
         self.stat_mid.setText(mid or "")
         self.stat_right.setText(right or "")
-
-    # ---- sinais ----
 
     def _emit_period(self):
         self.periodChanged.emit(self.get_period())

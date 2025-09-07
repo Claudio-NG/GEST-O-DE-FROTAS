@@ -1,7 +1,8 @@
+# multas.py
 import os, re, shutil
 import pandas as pd
-from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher
-from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher, QUrl
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QMessageBox,
@@ -492,8 +493,6 @@ class GeralMultasView(QWidget):
         table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0, 0, 0, 80))
         tv = QVBoxLayout(table_card)
 
-
-
         self.tabela = QTableWidget()
         self.tabela.setAlternatingRowColors(True)
         self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -569,6 +568,18 @@ class GeralMultasView(QWidget):
         self.df_filtrado = df
         self.preencher_tabela(self.df_filtrado)
 
+    def _abrir_pasta_da_multa(self, infrator, ano, mes, placa, notificacao, fluig):
+        """
+        Cria/abre a pasta da multa usando o padrão de diretórios central do sistema.
+        """
+        try:
+            dest = build_multa_dir(infrator, ano, mes, placa, notificacao, fluig)
+            if not os.path.exists(dest):
+                os.makedirs(dest, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(dest))
+        except Exception as e:
+            QMessageBox.warning(self, "Pasta da Multa", f"Não foi possível abrir a pasta.\n{e}")
+
     def preencher_tabela(self, df):
         if "COMENTARIO" not in df.columns:
             df = df.copy(); df["COMENTARIO"] = ""
@@ -593,13 +604,33 @@ class GeralMultasView(QWidget):
                     _paint_status(it, st)
                 self.tabela.setItem(i, j, it)
 
+            # --- Ações por linha: Pasta + Comentar ---
             key = str(df_idx.iloc[i].get("FLUIG", "")).strip()
+            infr  = str(df_idx.iloc[i].get("INFRATOR", "")).strip()
+            ano   = str(df_idx.iloc[i].get("ANO", "")).strip()
+            mes   = str(df_idx.iloc[i].get("MES", "")).strip()
+            placa = str(df_idx.iloc[i].get("PLACA", "")).strip()
+            notif = str(df_idx.iloc[i].get("NOTIFICACAO", "")).strip()
+
+            wrap = QWidget()
+            h = QHBoxLayout(wrap); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
+
+            btn_pasta = QPushButton("Pasta")
+            btn_pasta.setToolTip("Abrir a pasta desta multa")
+            btn_pasta.clicked.connect(
+                lambda _, a=infr, b=ano, c=mes, d=placa, e=notif, f=key: self._abrir_pasta_da_multa(a, b, c, d, e, f)
+            )
+            h.addWidget(btn_pasta)
+
             btn_comment = QPushButton("Comentar")
             if "COMENTARIO" in df_idx.columns:
                 btn_comment.setToolTip(str(df_idx.iloc[i].get("COMENTARIO", "")).strip())
             if self.parent_for_edit:
                 btn_comment.clicked.connect(lambda _, k=key: self.parent_for_edit.comentar_with_key(k))
-            self.tabela.setCellWidget(i, len(show.columns), btn_comment)
+            h.addWidget(btn_comment)
+
+            h.addStretch(1)
+            self.tabela.setCellWidget(i, len(show.columns), wrap)
 
         self.tabela.resizeColumnsToContents()
         self.tabela.resizeRowsToContents()

@@ -4,8 +4,8 @@ from glob import glob
 from pathlib import Path
 import pandas as pd
 
-from PyQt6.QtCore import QDate, Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QDate, Qt, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect, QMessageBox, QComboBox, QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QFrame, QLineEdit,
@@ -258,6 +258,33 @@ def apply_shadow(w, radius=20, blur=40, color=QColor(0,0,0,100)):
     eff.setColor(color)
     w.setGraphicsEffect(eff)
     w.setStyleSheet(f"border-radius:{radius}px;")
+
+# >>> Abrir pasta no SO (Explorer/Finder/Linux)
+def open_folder(path: str) -> None:
+    """
+    Abre 'path' no gerenciador de arquivos do sistema.
+    Tenta: os.startfile (Windows), xdg-open (Linux), open (macOS) e, por fim, QDesktopServices.
+    """
+    try:
+        p = os.path.abspath(path)
+        if not os.path.exists(p):
+            os.makedirs(p, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(p)  # type: ignore[attr-defined]
+            return
+        # POSIX
+        if shutil.which("xdg-open"):
+            os.system(f'xdg-open "{p}" >/dev/null 2>&1 &')
+            return
+        if shutil.which("open"):
+            os.system(f'open "{p}" >/dev/null 2>&1 &')
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+    except Exception:
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception:
+            pass
 
 # =============================================================================
 # CSV / Multas helpers
@@ -623,8 +650,6 @@ class GlobalFilterBar(QFrame):
         btn_plus.setFixedWidth(28)
         btn_plus.clicked.connect(lambda: self._add_edit(lay))
         lay.addWidget(btn_plus)
-
-
 
     def _add_edit(self, lay):
         le = QLineEdit()

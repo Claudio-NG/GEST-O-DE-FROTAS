@@ -1,5 +1,7 @@
+# main_window.py
 import os, re
 import pandas as pd
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QTabWidget, QVBoxLayout, QFrame, QHBoxLayout,
@@ -100,8 +102,6 @@ class AlertsTab(QWidget):
 
         self.recarregar()
 
-
-
     def _load_df(self):
         path = cfg_get("geral_multas_csv")
         if not path or not os.path.exists(path):
@@ -125,10 +125,6 @@ class AlertsTab(QWidget):
                     rows.append([fluig, infr, placa, orgao, col, dt, st])
 
         return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ORGÃO","ETAPA","DATA","STATUS"])
-
-
-
-
 
     def recarregar(self):
         self.df_original = self._load_df()
@@ -442,6 +438,7 @@ def _parse_money(s):
         return float(txt)
     except:
         return 0.0
+
 
 class CenarioGeralWindow(QWidget):
     """
@@ -845,7 +842,6 @@ class CenarioGeralWindow(QWidget):
         self._refresh_placa()
         self._refresh_reg()
 
-
     def _refresh_geral(self):
         df = self.df_f.copy()
         if df.empty:
@@ -996,20 +992,13 @@ class MultasMenu(QWidget):
         gv.addWidget(b2, 0, 1)
         v.addWidget(card)
 
-try:
-    from main_window import AlertsTab  # quando AlertsTab está neste arquivo
-except Exception:
-    try:
-        from .main_window import AlertsTab
-    except Exception:
-        pass
-
 
 class MainWindow(QMainWindow):
     """
     Janela principal com:
-    - Aba 'Início' contendo os botões grandes (Base, Infrações e Multas, Combustível, Relatórios, Alertas)
-    - Abertura de cada módulo em novas abas (sem duplicar se já estiver aberto)
+    - Aba 'Início' contendo os botões grandes (Base, Infrações e Multas, Combustível, Relatórios, Alertas, Condutor)
+    - Abertura de cada módulo em novas abas
+    - Relatórios EXPANSIVOS: cada planilha abre em sua própria aba "Relatório — <nome>"
     """
     def __init__(self, user_email: str | None = None):
         super().__init__()
@@ -1050,11 +1039,10 @@ class MainWindow(QMainWindow):
             ("Base", self.open_base),
             ("Infrações e Multas", self.open_multas),
             ("Combustível", self.open_combustivel),
-            ("Relatórios", self.open_relatorios),
-            ("Alertas", self.open_alertas),
-            ("Condutor", self.open_condutor),   # 👈 ADICIONE ESTA LINHA
+            ("Relatórios", self.open_relatorios),      # agora abre múltiplos arquivos em abas separadas
+            ("Alertas", self.open_alertas),            # método corrigido
+            ("Condutor", self.open_condutor),          # botão ativo
         ]
-
 
         for i, (label, slot) in enumerate(buttons):
             b = QPushButton(label)
@@ -1076,23 +1064,19 @@ class MainWindow(QMainWindow):
         # Coloca a Home como primeira aba
         self.tab_widget.addTab(home, "Início")
 
-
-
-    def open_condutor(self):
-        try:
-            from condutor import CondutorWindow
-            self.add_or_focus("Condutor — Busca Integrada", lambda: CondutorWindow())
-        except Exception as e:
-            QMessageBox.warning(self, "Condutor", f"Não foi possível abrir a tela de Condutor.\n{e}")
-
-
-
-    def add_or_focus(self, title, factory):
-        """Evita duplicar abas: foca se já existir; senão cria."""
+    # ===== Utilidades de abas =====
+    def _find_tab_index_by_title(self, title: str) -> int:
         for idx in range(self.tab_widget.count()):
             if self.tab_widget.tabText(idx) == title:
-                self.tab_widget.setCurrentIndex(idx)
-                return
+                return idx
+        return -1
+
+    def add_or_focus(self, title, factory):
+        """Evita duplicar abas com o mesmo título: foca se já existir; senão cria."""
+        idx = self._find_tab_index_by_title(title)
+        if idx >= 0:
+            self.tab_widget.setCurrentIndex(idx)
+            return
         w = factory()
         self.tab_widget.addTab(w, title)
         self.tab_widget.setCurrentWidget(w)
@@ -1107,7 +1091,6 @@ class MainWindow(QMainWindow):
 
     # ===== Ações dos botões =====
     def open_base(self):
-        # BaseTab costuma estar definido no seu projeto; ajuste o import se necessário
         try:
             from gestao_frota_single import BaseTab
             self.add_or_focus("Base", lambda: BaseTab())
@@ -1115,28 +1098,49 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Base", f"Não foi possível abrir a Base.\n{e}")
 
     def open_multas(self):
-        # Abre a janela principal de Multas (filtros + inserir/editar etc.)
         self.add_or_focus("Infrações e Multas", lambda: InfraMultasWindow())
 
     def open_combustivel(self):
-        # Abre o módulo Combustível (agora com caminhos configuráveis)
         try:
             self.add_or_focus("Combustível", lambda: CombustivelWindow())
         except Exception as e:
             QMessageBox.warning(self, "Combustível", str(e))
 
     def open_relatorios(self):
-        # Pede um arquivo (xlsx/xls/csv) e abre a janela de relatórios
-        p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
-        if not p:
+        """
+        Permite selecionar UMA OU VÁRIAS planilhas e abre cada uma em sua própria aba:
+        'Relatório — <nome_da_planilha>'.
+        Se a aba já existir, apenas foca.
+        """
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Abrir arquivo(s) de relatório", "",
+            "Planilhas (*.xlsx *.xls *.csv)"
+        )
+        if not paths:
             return
-        self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
 
-    def mostrar_alertas(self):
+        for p in paths:
+            try:
+                stem = Path(p).stem
+                title = f"Relatório — {stem}"
+                self.add_or_focus(title, lambda p_=p: RelatorioWindow(p_))
+            except Exception as e:
+                QMessageBox.warning(self, "Relatórios", f"Não foi possível abrir '{p}'.\n{e}")
+
+    def open_alertas(self):
+        """Abre a aba de Alertas (corrigido; antes o método não existia)."""
         try:
             self.add_or_focus("Alertas", lambda: AlertsTab())
         except Exception as e:
             QMessageBox.warning(self, "Alertas", f"Não foi possível abrir Alertas.\n{e}")
+
+    def open_condutor(self):
+        """Abre a tela de Condutor em uma nova aba."""
+        try:
+            from condutor import CondutorWindow
+            self.add_or_focus("Condutor — Busca Integrada", lambda: CondutorWindow())
+        except Exception as e:
+            QMessageBox.warning(self, "Condutor", f"Não foi possível abrir a tela de Condutor.\n{e}")
 
     def logout(self):
         self.close()

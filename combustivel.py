@@ -1,52 +1,477 @@
-from __future__ import annotations
-
 import os, re
-import datetime as dt
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
-
 import pandas as pd
-from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSpacerItem, QSizePolicy, QFrame, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QFileDialog, QComboBox, QTabWidget, QDateEdit,
-    QSlider, QProgressBar
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
 )
 
-from main_window import BaseView
-from utils import (
-    THEME, apply_shadow, load_df, ensure_datetime, apply_period, run_tasks,
-    export_to_csv, export_to_excel, GlobalFilterBar, CheckableComboBox,
-    normalize_text, df_apply_global_texts
+from gestao_frota_single import PORTUGUESE_MONTHS, DATE_FORMAT, cfg_get, cfg_set, cfg_all
+from utils import apply_shadow, CheckableComboBox
+
+class CombustivelWindow(QWidget):
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Combustível")
+        self.resize(1280, 900)
+
+        default_geral = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoGeral.xlsx"
+        default_simpl = r"T:\Veiculos\VEÍCULOS - RN\CPO-VEÍCULOS\ExtratoSimplificado.xlsx"
+        self.path_geral = cfg_get("extrato_geral_path") or default_geral
+        self.path_simplificado = cfg_get("extrato_simplificado_path") or default_simpl
+
+        self.cat_cols = [
+            "DATA TRANSACAO","PLACA","MODELO VEICULO","NOME MOTORISTA",
+            "TIPO COMBUSTIVEL","NOME ESTABELECIMENTO","RESPONSAVEL"
+        ]
+        self.num_cols = [
+            "LITROS","VL/LITRO","HODOMETRO OU HORIMETRO",
+            "KM RODADOS OU HORAS TRABALHADAS","KM/LITRO OU LITROS/HORA","VALOR EMISSAO"
+        ]
+        import pandas as pd
+        self.df_original = pd.DataFrame(columns=self.cat_cols + self.num_cols)
+        self.df_filtrado = self.df_original.copy()
+        self.df_limites = pd.DataFrame()
+        self.tot_limites = {
+            "LIMITE ATUAL":0.0,"COMPRAS (UTILIZADO)":0.0,"SALDO":0.0,"LIMITE PRÓXIMO PERÍODO":0.0
+        }
+        self.filters = {}
+        self.kpi_vals = {}
+        self.kpi_dual = {}
+        self.fit_targets = []
+
+        # ===== UI original (sem mudanças estruturais) =====
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton,
+            QGridLayout, QScrollArea
+        )
+        from PyQt6.QtGui import QColor, QFont
+        from PyQt6.QtCore import Qt
+        root = QVBoxLayout(self)
+
+        header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
+        hv = QVBoxLayout(header)
+        tools = QHBoxLayout()
+
+        self.btn_reload = QPushButton("Recarregar")
+        self.btn_reload.clicked.connect(self.recarregar)
+
+        self.btn_clear = QPushButton("Limpar Filtros")
+        self.btn_clear.clicked.connect(self.limpar_filtros)
+
+        # Botão opcional para trocar caminhos na hora (salva na base.json)
+        btn_paths = QPushButton("Definir Arquivos…")
+        btn_paths.clicked.connect(self._definir_arquivos)
+
+        tools.addWidget(self.btn_reload)
+        tools.addStretch(1)
+        tools.addWidget(btn_paths)
+        tools.addWidget(self.btn_clear)
+        hv.addLayout(tools)
+
+        # Barra de período (original)
+        self.cb_periodo = QComboBox(); self.cb_periodo.addItem("Todos")
+        self.cb_periodo.currentTextChanged.connect(lambda _: self._on_time_combo("periodo"))
+        self.cb_mes = QComboBox(); self.cb_mes.addItem("Todos")
+        self.cb_mes.currentTextChanged.connect(lambda _: self._on_time_combo("mes"))
+        self.cb_ano = QComboBox(); self.cb_ano.addItem("Todos")
+        self.cb_ano.currentTextChanged.connect(lambda _: self._on_time_combo("ano"))
+
+        timebar = QHBoxLayout()
+        timebar.addWidget(QLabel("Período")); timebar.addWidget(self.cb_periodo)
+        timebar.addSpacing(16)
+        timebar.addWidget(QLabel("Mês")); timebar.addWidget(self.cb_mes)
+        timebar.addSpacing(16)
+        timebar.addWidget(QLabel("Ano")); timebar.addWidget(self.cb_ano)
+        hv.addLayout(timebar)
+
+        # Filtros categóricos (original)
+        from PyQt6.QtWidgets import QLineEdit
+        grid = QGridLayout()
+        for i, col in enumerate(self.cat_cols):
+            box = QVBoxLayout()
+            lab = QLabel(col); lab.setObjectName("colTitle")
+            cb = QComboBox(); cb.addItem("Todos"); cb.currentTextChanged.connect(self.atualizar_filtro)
+            self.filters[col] = cb
+            from PyQt6.QtWidgets import QWidget as _QW
+            wrap = _QW(); inner = QVBoxLayout(wrap); inner.addWidget(lab); inner.addWidget(cb)
+            grid.addWidget(wrap, i//4, i%4)
+        hv.addLayout(grid)
+
+        root.addWidget(header)
+
+        self.recarregar()
+
+
+    def _definir_arquivos(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        # Extrato Geral
+        p1, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Geral", "", "Planilhas (*.xlsx *.xls)")
+        if p1:
+            self.path_geral = p1
+            cfg_set("extrato_geral_path", p1)  # persiste no base.json
+        # Extrato Simplificado
+        p2, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Simplificado", "", "Planilhas (*.xlsx *.xls)")
+        if p2:
+            self.path_simplificado = p2
+            cfg_set("extrato_simplificado_path", p2)
+        if p1 or p2:
+            QMessageBox.information(self, "Configuração salva", "Caminhos atualizados.")
+            self.recarregar()
+
+
+
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        for lab in self.fit_targets:
+            self._fit_font(lab)
+
+    def _make_kpi(self, title):
+        f = QFrame(); f.setObjectName("card"); apply_shadow(f, radius=14)
+        v = QVBoxLayout(f)
+        t = QLabel(title); t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        val = QLabel("0"); val.setObjectName("val"); val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(t); v.addWidget(val)
+        val.setFont(QFont("Arial", 30, QFont.Weight.Bold))
+        self.fit_targets.append(val)
+        return f
+
+    def _make_kpi_dual(self, title, currency=False):
+        f = QFrame(); f.setObjectName("card"); apply_shadow(f, radius=14)
+        v = QVBoxLayout(f)
+        t = QLabel(title); t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main = QLabel("0"); main.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub = QLabel("TOTAL: 0"); sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main.setProperty("currency", currency)
+        sub.setProperty("currency", currency)
+        main.setFont(QFont("Arial", 34, QFont.Weight.Bold))
+        sub.setFont(QFont("Arial", 12))
+        v.addWidget(t); v.addWidget(main); v.addWidget(sub)
+        self.fit_targets.append(main)
+        return {"frame": f, "main": main, "sub": sub}
+
+    def _parse_dt(self, s):
+        s = str(s).strip()
+        if not s:
+            return pd.NaT
+        for fmt in ["%d/%m/%Y %H:%M:%S","%d/%m/%Y","%Y-%m-%d %H:%M:%S","%Y-%m-%d"]:
+            try:
+                return pd.to_datetime(s, format=fmt, dayfirst=True)
+            except:
+                continue
+        try:
+            return pd.to_datetime(s, dayfirst=True, errors="coerce")
+        except:
+            return pd.NaT
+
+    def _period_start(self, d):
+        if d.day >= 15:
+            return pd.Timestamp(d.year, d.month, 15)
+        prev = d - pd.offsets.MonthBegin(1)
+        prev = prev - pd.offsets.Day(1)
+        return pd.Timestamp(prev.year, prev.month, 15)
+
+    def _period_end(self, start):
+        nm = start + pd.offsets.MonthBegin(1)
+        return pd.Timestamp(nm.year, nm.month, 14)
+
+    def _month_label(self, d):
+        return f"{PORTUGUESE_MONTHS.get(d.month,'').upper()}/{str(d.year)[-2:]}"
+
+    def recarregar(self):
+        try:
+            df = pd.read_excel(self.path_geral, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self,"Erro",str(e)); df = pd.DataFrame()
+        try:
+            df2 = pd.read_excel(self.path_simplificado, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self,"Erro",str(e)); df2 = pd.DataFrame()
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        df2.columns = [str(c).strip().upper() for c in df2.columns]
+        for c in self.cat_cols + self.num_cols:
+            if c not in df.columns:
+                df[c] = ""
+        if "DATA TRANSACAO" in df.columns:
+            dt_series = df["DATA TRANSACAO"].apply(self._parse_dt)
+        else:
+            dt_series = pd.to_datetime(pd.Series([], dtype=str))
+        df["__DT__"] = dt_series
+        df["DATA TRANSACAO"] = df["__DT__"].dt.strftime("%d-%m-%Y").fillna("")
+        self.df_original = df[self.cat_cols + self.num_cols + ["__DT__"]].copy()
+        self.df_filtrado = self.df_original.copy()
+        cr = None
+        for cand in ["NOME RESPONSÁVEL","NOME RESPONSAVEL","RESPONSAVEL","RESPONSÁVEL"]:
+            if cand in df2.columns:
+                cr = cand; break
+        if cr is None:
+            df2["RESPONSAVEL"] = ""
+        else:
+            df2 = df2.rename(columns={cr:"RESPONSAVEL"})
+        map_cols = {
+            "LIMITE ATUAL":["LIMITE ATUAL","LIMITE ATUAL "],
+            "COMPRAS (UTILIZADO)":["COMPRAS (UTILIZADO)","COMPRAS","COMPRAS UTILIZADO"],
+            "SALDO":["SALDO"],
+            "LIMITE PRÓXIMO PERÍODO":["LIMITE PRÓXIMO PERÍODO","LIMITE PROXIMO PERIODO"]
+        }
+        for std, alts in map_cols.items():
+            if std not in df2.columns:
+                for a in alts:
+                    if a in df2.columns:
+                        df2.rename(columns={a:std}, inplace=True)
+                        break
+        for need in ["PLACA","LIMITE ATUAL","COMPRAS (UTILIZADO)","SALDO","LIMITE PRÓXIMO PERÍODO"]:
+            if need not in df2.columns:
+                df2[need] = ""
+        self.df_limites = df2[["PLACA","RESPONSAVEL","LIMITE ATUAL","COMPRAS (UTILIZADO)","SALDO","LIMITE PRÓXIMO PERÍODO"]].copy()
+        self.tot_limites = {
+            "LIMITE ATUAL": float(self._col_sum(self.df_limites, "LIMITE ATUAL")),
+            "COMPRAS (UTILIZADO)": float(self._col_sum(self.df_limites, "COMPRAS (UTILIZADO)")),
+            "SALDO": float(self._col_sum(self.df_limites, "SALDO")),
+            "LIMITE PRÓXIMO PERÍODO": float(self._col_sum(self.df_limites, "LIMITE PRÓXIMO PERÍODO"))
+        }
+        self._rebuild_filters()
+        self._build_time_combos()
+        self._update_all()
+
+    def _build_time_combos(self):
+        dts = self.df_original["__DT__"].dropna()
+        periods = []
+        months = []
+        years = []
+        if not dts.empty:
+            dmin = dts.min().normalize()
+            dmax = dts.max().normalize()
+            start = self._period_start(dmin)
+            idx = 1
+            while start <= dmax:
+                end = self._period_end(start)
+                periods.append((f"P{idx}: {start.strftime('%d/%m/%Y')} – {end.strftime('%d/%m/%Y')}", start, end))
+                idx += 1
+                start = end + pd.Timedelta(days=1)
+            uniq = sorted({(int(d.month), int(d.year)) for d in dts})
+            for m,y in uniq:
+                months.append((self._month_label(pd.Timestamp(y, m, 1)), m, y))
+            years = sorted({int(d.year) for d in dts})
+        self.cb_periodo.blockSignals(True); self.cb_periodo.clear(); self.cb_periodo.addItem("Todos")
+        for label, s, e in periods:
+            self.cb_periodo.addItem(label, (s, e))
+        self.cb_periodo.blockSignals(False)
+        self.cb_mes.blockSignals(True); self.cb_mes.clear(); self.cb_mes.addItem("Todos")
+        for label, m, y in months:
+            self.cb_mes.addItem(label, (m, y))
+        self.cb_mes.blockSignals(False)
+        self.cb_ano.blockSignals(True); self.cb_ano.clear(); self.cb_ano.addItem("Todos")
+        for y in years:
+            self.cb_ano.addItem(str(y), y)
+        self.cb_ano.blockSignals(False)
+
+    def _on_time_combo(self, who):
+        if who=="periodo" and self.cb_periodo.currentText()!="Todos":
+            self.cb_mes.blockSignals(True); self.cb_mes.setCurrentIndex(0); self.cb_mes.blockSignals(False)
+            self.cb_ano.blockSignals(True); self.cb_ano.setCurrentIndex(0); self.cb_ano.blockSignals(False)
+        elif who=="mes" and self.cb_mes.currentText()!="Todos":
+            self.cb_periodo.blockSignals(True); self.cb_periodo.setCurrentIndex(0); self.cb_periodo.blockSignals(False)
+            self.cb_ano.blockSignals(True); self.cb_ano.setCurrentIndex(0); self.cb_ano.blockSignals(False)
+        elif who=="ano" and self.cb_ano.currentText()!="Todos":
+            self.cb_periodo.blockSignals(True); self.cb_periodo.setCurrentIndex(0); self.cb_periodo.blockSignals(False)
+            self.cb_mes.blockSignals(True); self.cb_mes.setCurrentIndex(0); self.cb_mes.blockSignals(False)
+        self.atualizar_filtro()
+
+    def limpar_filtros(self):
+        for cb in self.filters.values():
+            cb.blockSignals(True); cb.setCurrentIndex(0); cb.blockSignals(False)
+        self.cb_periodo.blockSignals(True); self.cb_periodo.setCurrentIndex(0); self.cb_periodo.blockSignals(False)
+        self.cb_mes.blockSignals(True); self.cb_mes.setCurrentIndex(0); self.cb_mes.blockSignals(False)
+        self.cb_ano.blockSignals(True); self.cb_ano.setCurrentIndex(0); self.cb_ano.blockSignals(False)
+        self.atualizar_filtro()
+
+    def atualizar_filtro(self):
+        df = self.df_original.copy()
+        mask = pd.Series([True]*len(df))
+        if self.cb_periodo.currentText()!="Todos":
+            s,e = self.cb_periodo.currentData()
+            mask &= df["__DT__"].between(s, e)
+        elif self.cb_mes.currentText()!="Todos":
+            m,y = self.cb_mes.currentData()
+            mask &= (df["__DT__"].dt.month==m) & (df["__DT__"].dt.year==y)
+        elif self.cb_ano.currentText()!="Todos":
+            y = self.cb_ano.currentData()
+            mask &= (df["__DT__"].dt.year==y)
+        df = df[mask]
+        for col,cb in self.filters.items():
+            sel = cb.currentText()
+            if sel and sel!="Todos":
+                df = df[df[col].astype(str)==sel]
+        self.df_filtrado = df
+        for col,cb in self.filters.items():
+            current = cb.currentText()
+            items = ["Todos"] + sorted(self.df_filtrado[col].dropna().astype(str).unique())
+            cb.blockSignals(True); cb.clear(); cb.addItems(items); cb.setCurrentText(current if current in items else "Todos"); cb.blockSignals(False)
+        self._update_all()
+
+    def _rebuild_filters(self):
+        for col,cb in self.filters.items():
+            cb.blockSignals(True)
+            cb.clear()
+            items = ["Todos"] + sorted(self.df_original[col].dropna().astype(str).unique())
+            cb.addItems(items)
+            cb.blockSignals(False)
+
+    def _num_brl(self, x):
+        s = str(x).strip()
+        if not s:
+            return Decimal("0")
+        s = re.sub(r"[^\d,.\-]", "", s)
+        if "," in s and "." in s:
+            dec = "," if s.rfind(",") > s.rfind(".") else "."
+            mil = "." if dec == "," else ","
+            s = s.replace(mil, "")
+            if dec == ",":
+                s = s.replace(",", ".")
+        elif "," in s and "." not in s:
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+        elif "." in s and "," not in s:
+            pass
+        try:
+            return Decimal(s)
+        except:
+            return Decimal("0")
+
+    def _col_sum(self, df, col):
+        return sum(self._num_brl(v) for v in df[col].tolist())
+
+    def _to_float(self, x):
+        return float(self._num_brl(x))
+
+    def _fmt_num(self, v):
+        s = f"{v:,.2f}"
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _fmt_brl(self, v):
+        return "R$ " + self._fmt_num(v)
+
+    def _fit_font(self, label, max_pt=40, min_pt=10):
+        text = label.text()
+        if not text:
+            return
+        w = max(10, label.width()-8)
+        h = max(10, label.height()-8)
+        f = label.font()
+        size = max_pt
+        while size >= min_pt:
+            f.setPointSize(size)
+            fm = QFontMetrics(f)
+            if fm.horizontalAdvance(text) <= w and fm.height() <= h:
+                break
+            size -= 1
+        label.setFont(f)
+
+    def _update_all(self):
+        vals = {c: float(self.df_filtrado[c].apply(self._num_brl).sum()) for c in self.num_cols}
+        self.kpi_vals["LITROS"].setText(self._fmt_num(vals["LITROS"]))
+        self.kpi_vals["VL/LITRO"].setText(self._fmt_brl(vals["VL/LITRO"]))
+        self.kpi_vals["HODOMETRO OU HORIMETRO"].setText(self._fmt_num(vals["HODOMETRO OU HORIMETRO"]))
+        self.kpi_vals["KM RODADOS OU HORAS TRABALHADAS"].setText(self._fmt_num(vals["KM RODADOS OU HORAS TRABALHADAS"]))
+        self.kpi_vals["KM/LITRO OU LITROS/HORA"].setText(self._fmt_num(vals["KM/LITRO OU LITROS/HORA"]))
+        self.kpi_vals["VALOR EMISSAO"].setText(self._fmt_brl(vals["VALOR EMISSAO"]))
+        for lab in self.kpi_vals.values():
+            self._fit_font(lab)
+        placa_sel = self.filters["PLACA"].currentText() if "PLACA" in self.filters else "Todos"
+        if placa_sel != "Todos":
+            p = str(placa_sel).strip().upper()
+            dfp = self.df_limites[self.df_limites["PLACA"].astype(str).str.strip().str.upper().eq(p)]
+        else:
+            dfp = self.df_limites.iloc[0:0]
+        for key, card in self.kpi_dual.items():
+            main_val = float(self._col_sum(dfp, key)) if placa_sel != "Todos" else 0.0
+            total_val = float(self._col_sum(self.df_limites, key))
+            card["main"].setText(self._fmt_brl(main_val))
+            card["sub"].setText("TOTAL: " + self._fmt_brl(total_val))
+            self._fit_font(card["main"])
+
+import re
+import pandas as pd
+from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout
+)
+from utils import apply_shadow
+
+import os, re
+from decimal import Decimal
+import pandas as pd
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QFrame, QHBoxLayout, QLabel, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QDateEdit, QPushButton, QGridLayout, QScrollArea, QLineEdit
 )
 
-# ==================== Config / paths ====================
-try:
-    from gestao_frota_single import (
-        cfg_get, cfg_set, DATE_FORMAT
-    )
-except Exception:
-    def cfg_get(k): return None
-    def cfg_set(k, v): pass
-    DATE_FORMAT = "dd/MM/yyyy"
+from utils import apply_shadow, CheckableComboBox
 
-DEFAULT_GERAL_PATH = cfg_get("extrato_geral_path") or ""
-DEFAULT_SIMPL_PATH = cfg_get("extrato_simplificado_path") or ""
-DEFAULT_DIR = cfg_get("combustivel_dir") or ""
+# >>> mudou aqui
+from gestao_frota_single import PORTUGUESE_MONTHS, cfg_get
+
+# SUBSTITUA:
+# from constants import ...
+# from config import cfg_get
+
+# POR:
+from gestao_frota_single import DATE_FORMAT, cfg_get, cfg_set, cfg_all
 
 
-# ==================== Helpers num/str ====================
-def _num_from_text(s) -> float:
-    if s is None: return 0.0
+def _dt_parse_any(s):
+    s = str(s).strip()
+    if not s:
+        return pd.NaT
+    # tenta com hora
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return pd.to_datetime(s, format=fmt, dayfirst=True, errors="raise")
+        except:
+            pass
+    # sem hora
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return pd.to_datetime(s, format=fmt, dayfirst=True, errors="raise")
+        except:
+            pass
+    return pd.to_datetime(s, dayfirst=True, errors="coerce")
+
+
+
+def _num_from_text(s):
+    """
+    Suporta formatos BR e US:
+    - "R$ 1.234,56" -> 1234.56
+    - "6,590" -> 6.59
+    - "1,234.56" -> 1234.56
+    """
+    if s is None:
+        return 0.0
     txt = str(s).strip()
-    if not txt: return 0.0
+    if not txt:
+        return 0.0
+    import re
     txt = re.sub(r"[^\d.,-]", "", txt)
+
     if ("," not in txt) and ("." not in txt):
-        try: return float(txt)
-        except: return 0.0
+        try:
+            return float(txt)
+        except:
+            return 0.0
+
     if "," in txt and "." in txt:
-        last_comma = txt.rfind(","); last_dot = txt.rfind(".")
+        last_comma = txt.rfind(",")
+        last_dot = txt.rfind(".")
         if last_comma > last_dot:
             txt = txt.replace(".", "").replace(",", ".")
         else:
@@ -54,614 +479,555 @@ def _num_from_text(s) -> float:
     else:
         if "," in txt:
             txt = txt.replace(",", ".")
-    try: return float(txt)
-    except: return 0.0
+    try:
+        return float(txt)
+    except:
+        return 0.0
 
-def _fmt_num(v: float) -> str:
-    s = f"{v:,.2f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-def _fmt_brl(v: float) -> str:
-    return "R$ " + _fmt_num(v)
 
-# ==================== View ====================
-
-class CombustivelView(BaseView):
+class CombustivelDetalhadoWindow(QWidget):
+    """
+    Painel detalhado:
+    - Base = ExtratoGeral (principal)
+    - Complemento = ExtratoSimplificado (por PLACA)
+    - Filtro por DATA TRANSACAO (régua de tempo)
+    - Cenários: GERAL, DATA, PLACA, MOTORISTA, COMBUSTÍVEL, CIDADE/UF, ESTABELECIMENTO, RESPONSÁVEL
+    """
     def __init__(self):
-        super().__init__("Combustível")
+        super().__init__()
+        self.setWindowTitle("Combustível - Visão Detalhada")
+        self.resize(1280, 860)
+        self.path_geral = cfg_get("extrato_geral_path")
+        self.path_simpl = cfg_get("extrato_simplificado_path")
+        self._load_data()
+        self._build_ui()
+        self._apply_filters_and_refresh()
 
-        # estado
-        self.path_geral = DEFAULT_GERAL_PATH
-        self.path_simpl = DEFAULT_SIMPL_PATH
-        self.dir_many  = DEFAULT_DIR
+    # ------- carga
+    def _read_xls(self, path):
+        if not path:
+            return pd.DataFrame()
+        try:
+            return pd.read_excel(path, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.warning(self, "Combustível", f"Erro ao abrir '{path}': {e}")
+            return pd.DataFrame()
 
-        self._df_base: pd.DataFrame = pd.DataFrame()          # extrato geral (normalizado + merge)
-        self._df_simpl: pd.DataFrame = pd.DataFrame()         # extrato simplificado (limites)
-        self._df_work: pd.DataFrame = pd.DataFrame()          # filtrado/tab lançamentos
-        self._df_analitico: pd.DataFrame = pd.DataFrame()     # filtrado/tab analítico
-        self._df_limites: pd.DataFrame = pd.DataFrame()       # limites por placa
+    def _load_data(self):
+        geral = self._read_xls(self.path_geral)
+        simpl = self._read_xls(self.path_simpl)
 
-        # filtros avançados
-        self._search = GlobalFilterBar("Busca global:")
-        self._cmb_veiculo = CheckableComboBox([])
-        self._cmb_condutor = CheckableComboBox([])
-
-        # botões
-        self._btn_paths = QPushButton("Definir Arquivos…")
-        self._btn_paths.clicked.connect(self._definir_arquivos)
-        self._btn_export_csv = QPushButton("Exportar CSV")
-        self._btn_export_xlsx = QPushButton("Exportar XLSX")
-        self._btn_export_csv.clicked.connect(self._export_csv)
-        self._btn_export_xlsx.clicked.connect(self._export_xlsx)
-
-        # progresso
-        self._progress = QProgressBar(); self._progress.setTextVisible(False)
-        self._progress.setFixedHeight(4); self._progress.hide()
-
-        # avançado
-        self._build_advanced()
-
-        # abas
-        self._build_tabs()
-
-        # sinais
-        self.header.btn_aplicar.clicked.connect(self._reload)
-        self._search.changed.connect(lambda *_: self._apply_filters())
-        self._cmb_veiculo.changed.connect(lambda *_: self._apply_filters())
-        self._cmb_condutor.changed.connect(lambda *_: self._apply_filters())
-
-        QTimer.singleShot(60, self._reload)
-
-    # ------------- Advanced panel -------------
-    def _build_advanced(self):
-        wrap = QFrame()
-        g = QGridLayout(wrap); g.setContentsMargins(0,0,0,0); g.setHorizontalSpacing(8)
-        r = 0
-        g.addWidget(QLabel("Veículo/Placa:"), r, 0, 1, 1); g.addWidget(self._cmb_veiculo, r, 1, 1, 1); r += 1
-        g.addWidget(QLabel("Condutor:"), r, 0, 1, 1); g.addWidget(self._cmb_condutor, r, 1, 1, 1); r += 1
-        g.addWidget(QLabel("Busca:"), r, 0, 1, 1); g.addWidget(self._search, r, 1, 1, 2); r += 1
-        actions = QHBoxLayout(); actions.addWidget(self._btn_paths); actions.addStretch(1)
-        actions.addWidget(self._btn_export_csv); actions.addWidget(self._btn_export_xlsx)
-        g.addLayout(actions, r, 0, 1, 3)
-        self.set_advanced_widget(wrap)
-
-    # ------------- Tabs -------------
-    def _build_tabs(self):
-        # Cenário Geral
-        self._tab_cenario = QWidget(); vc = QVBoxLayout(self._tab_cenario); vc.setContentsMargins(4,4,4,4)
-        vc.addWidget(self._progress)
-        self._cards_top = QHBoxLayout()
-        self._cards_bottom = QHBoxLayout()
-        vc.addLayout(self._cards_top)
-        vc.addLayout(self._cards_bottom)
-        self.add_unique_tab("cenario", "Cenário Geral", self._tab_cenario)
-
-        # Lançamentos
-        self._tab_lanc = QWidget(); vl = QVBoxLayout(self._tab_lanc); vl.setContentsMargins(4,4,4,4)
-        self._tbl_lanc = self._make_table()
-        vl.addWidget(self._tbl_lanc, 1)
-        self.add_unique_tab("lanc", "Lançamentos", self._tab_lanc)
-
-        # Analítico (Visão Detalhada)
-        self._tab_ana = self._build_analitico_tab()
-        self.add_unique_tab("ana", "Analítico", self._tab_ana)
-
-        # Limites
-        self._tab_lim = QWidget(); vlm = QVBoxLayout(self._tab_lim); vlm.setContentsMargins(4,4,4,4)
-        self._cards_lim = QHBoxLayout()
-        vlm.addLayout(self._cards_lim)
-        self.add_unique_tab("lim", "Limites", self._tab_lim)
-
-    def _make_table(self) -> QTableWidget:
-        t = QTableWidget()
-        t.setAlternatingRowColors(True)
-        t.setSortingEnabled(True)
-        t.horizontalHeader().setSortIndicatorShown(True)
-        t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        t.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        return t
-
-    # ------------- Load / Threads -------------
-    def _reload(self):
-        self._progress.show()
-        self.set_footer_stats("Carregando…", "", "")
-        key, d1, d2 = self.get_period()
-
-        def load_geral():
-            if self.path_geral and os.path.isfile(self.path_geral):
-                df = load_df(self.path_geral, dtype=str, normalize_cols=False)
-            elif self.dir_many and os.path.isdir(self.dir_many):
-                dfs = []
-                for n in os.listdir(self.dir_many):
-                    if n.lower().endswith((".xlsx",".xls",".csv")):
-                        p = os.path.join(self.dir_many, n)
-                        try:
-                            dfs.append(load_df(p, dtype=str, normalize_cols=False))
-                        except Exception:
-                            pass
-                df = pd.concat(dfs, ignore_index=True, sort=False) if dfs else pd.DataFrame()
-            else:
-                df = pd.DataFrame()
-            # normalizações de data
-            for c in df.columns:
-                if "DATA" in str(c).upper():
-                    try: df[c] = ensure_datetime(df[c])
-                    except Exception: pass
-            return df
-
-        def load_simpl():
-            if self.path_simpl and os.path.isfile(self.path_simpl):
-                df = load_df(self.path_simpl, dtype=str, normalize_cols=False)
-            else:
-                df = pd.DataFrame()
-            for c in df.columns:
-                if "DATA" in str(c).upper():
-                    try: df[c] = ensure_datetime(df[c])
-                    except Exception: pass
-            return df
-
-        results: Dict[str, pd.DataFrame] = {}
-        def on_result(name, res):
-            results[name] = res
-
-        run_tasks({"GERAL": load_geral, "SIMPL": load_simpl}, max_workers=2, on_result=on_result)
-
-        geral = results.get("GERAL", pd.DataFrame()).fillna("")
-        simpl = results.get("SIMPL", pd.DataFrame()).fillna("")
-
-        # Normalizações mínimas (mapa do seu código antigo)
+        # Normaliza nomes mínimos
+        # ExtratoGeral
         m1 = {
-            "DATA TRANSACAO":"DATA_TRANSACAO","PLACA":"PLACA","NOME MOTORISTA":"MOTORISTA",
-            "TIPO COMBUSTIVEL":"COMBUSTIVEL","LITROS":"LITROS","VL/LITRO":"VL_LITRO",
-            "VALOR EMISSAO":"VALOR","NOME ESTABELECIMENTO":"ESTABELECIMENTO","CIDADE":"CIDADE",
-            "UF":"UF","CIDADE/UF":"CIDADE_UF","RESPONSAVEL":"RESPONSAVEL",
-            "KM RODADOS OU HORAS TRABALHADAS":"KM_RODADOS","KM/LITRO OU LITROS/HORA":"KM_POR_L",
-            "MODELO VEICULO":"MODELO","FAMILIA VEICULO":"FAMILIA","TIPO FROTA":"TIPO_FROTA"
+            "DATA TRANSACAO":"DATA_TRANSACAO",
+            "PLACA":"PLACA",
+            "NOME MOTORISTA":"MOTORISTA",
+            "TIPO COMBUSTIVEL":"COMBUSTIVEL",
+            "LITROS":"LITROS",
+            "VL/LITRO":"VL_LITRO",
+            "VALOR EMISSAO":"VALOR",
+            "NOME ESTABELECIMENTO":"ESTABELECIMENTO",
+            "CIDADE":"CIDADE",
+            "UF":"UF",
+            "CIDADE/UF":"CIDADE_UF",
+            "SERVICO":"SERVICO",
+            "FORMA DE PAGAMENTO":"PAGAMENTO",
+            "RESPONSAVEL":"RESPONSAVEL",
+            "MODELO VEICULO":"MODELO",
+            "FAMILIA VEICULO":"FAMILIA",
+            "TIPO FROTA":"TIPO_FROTA",
+            "KM RODADOS OU HORAS TRABALHADAS":"KM_RODADOS",
+            "KM/LITRO OU LITROS/HORA":"KM_POR_L"
         }
         use1 = {src: dst for src, dst in m1.items() if src in geral.columns}
         geral = geral.rename(columns=use1)
 
+        # ExtratoSimplificado
         m2 = {
-            "Placa":"PLACA","Família":"FAMILIA","Tipo Frota":"TIPO_FROTA","Modelo":"MODELO",
-            "Cidade/UF":"CIDADE_UF","Nome Responsável":"RESPONSAVEL",
-            "Limite Atual":"LIMITE_ATUAL","Compras (utilizado)":"UTILIZADO","Saldo":"SALDO","Limite Próximo Período":"LIMITE_PROX"
+            "Placa":"PLACA",
+            "Família":"FAMILIA",
+            "Tipo Frota":"TIPO_FROTA",
+            "Modelo":"MODELO",
+            "Fabricante":"FABRICANTE",
+            "Cidade/UF":"CIDADE_UF",
+            "Nome Responsável":"RESPONSAVEL",
+            "Limite":"LIMITE",
+            "Valor Reservado":"RESERVADO",
+            "Limite Atual":"LIMITE_ATUAL",
+            "Compras (utilizado)":"UTILIZADO",
+            "Saldo":"SALDO",
+            "Limite Próximo Período":"LIMITE_PROX"
         }
         use2 = {src: dst for src, dst in m2.items() if src in simpl.columns}
         simpl = simpl.rename(columns=use2)
 
+        # Deriva cidade/uf se não houver
         if "CIDADE_UF" not in geral.columns:
-            geral["CIDADE_UF"] = geral.get("CIDADE","").astype(str).str.strip()+"/"+geral.get("UF","").astype(str).str.strip()
+            cu = []
+            for _, r in geral.iterrows():
+                cidade = str(r.get("CIDADE", "")).strip()
+                uf = str(r.get("UF", "")).strip()
+                cu.append(f"{cidade}/{uf}" if cidade or uf else "")
+            geral["CIDADE_UF"] = cu
 
-        geral["DT"] = geral.get("DATA_TRANSACAO", "").apply(lambda x: pd.to_datetime(str(x), dayfirst=True, errors="coerce"))
-        for c_src, c_num in [("LITROS","LITROS_NUM"),("VL_LITRO","VL_LITRO_NUM"),("VALOR","VALOR_NUM"),
-                             ("KM_RODADOS","KM_RODADOS_NUM"),("KM_POR_L","KM_POR_L_NUM")]:
-            geral[c_num] = geral.get(c_src, "").map(_num_from_text)
+        # Tipos e números
+        geral["DT"] = geral.get("DATA_TRANSACAO", "").map(_dt_parse_any)
+        geral["LITROS_NUM"] = geral.get("LITROS", "").map(_num_from_text)
+        geral["VL_LITRO_NUM"] = geral.get("VL_LITRO", "").map(_num_from_text)
+        geral["VALOR_NUM"] = geral.get("VALOR", "").map(_num_from_text)
+        geral["KM_RODADOS_NUM"] = geral.get("KM_RODADOS", "").map(_num_from_text)
+        geral["KM_POR_L_NUM"] = geral.get("KM_POR_L", "").map(_num_from_text)
 
+        # Merge do simplificado por PLACA
         if not simpl.empty and "PLACA" in simpl.columns:
-            for c in ["LIMITE_ATUAL","UTILIZADO","SALDO","LIMITE_PROX"]:
+            # números do simplificado
+            for c in ["LIMITE","RESERVADO","LIMITE_ATUAL","UTILIZADO","SALDO","LIMITE_PROX"]:
                 if c in simpl.columns:
                     simpl[c+"_NUM"] = simpl[c].map(_num_from_text)
-            merged = geral.merge(simpl, on="PLACA", how="left", suffixes=("", "_S"))
+            self.df_base = geral.merge(
+                simpl[[c for c in simpl.columns if c]], on="PLACA", how="left", suffixes=("", "_S")
+            )
         else:
-            merged = geral.copy()
+            self.df_base = geral.copy()
 
-        # período do cabeçalho
-        date_col = "DT" if "DT" in merged.columns else None
-        if date_col:
-            merged = apply_period(merged, date_col, d1, d2)
+        # Datas para régua
+        dates = sorted(list(self.df_base["DT"].dropna().dt.normalize().unique()))
+        self._dates = dates if dates else []
+        self._dmin = min(dates) if dates else pd.Timestamp.today().normalize()
+        self._dmax = max(dates) if dates else pd.Timestamp.today().normalize()
 
-        self._df_base = merged.reset_index(drop=True)
-        self._df_simpl = simpl.reset_index(drop=True)
-        self._df_limites = simpl[["PLACA","RESPONSAVEL","LIMITE_ATUAL","UTILIZADO","SALDO","LIMITE_PROX"]].copy() if not simpl.empty else pd.DataFrame()
 
-        self._feed_filters_from_df(self._df_base)
-        self._apply_filters()
+    def _build_ui(self):
+        root = QVBoxLayout(self)
 
-        self._progress.hide()
+    
+        title = QFrame(); title.setObjectName("glass"); apply_shadow(title, radius=18, blur=60, color=QColor(0,0,0,60))
+        tv = QVBoxLayout(title); tv.setContentsMargins(18,18,18,18)
+        h = QLabel("Combustível — Visão Detalhada"); h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.setFont(QFont("Arial", 22, weight=QFont.Weight.Bold))
+        tv.addWidget(h)
+        root.addWidget(title)
 
-    # ------------- Filtros -------------
-    def _feed_filters_from_df(self, df: pd.DataFrame):
-        if df is None or df.empty:
-            self._cmb_veiculo.set_values([]); self._cmb_condutor.set_values([]); return
-        veic_col = next((c for c in df.columns if "VEIC" in c.upper() or "PLACA" in c.upper()), None)
-        cond_col = next((c for c in df.columns if "MOTORISTA" in c.upper() or "CONDUTOR" in c.upper() or "RESPONS" in c.upper()), None)
-        self._cmb_veiculo.set_values(sorted(df[veic_col].dropna().astype(str).unique())) if veic_col else self._cmb_veiculo.set_values([])
-        self._cmb_condutor.set_values(sorted(df[cond_col].dropna().astype(str).unique())) if cond_col else self._cmb_condutor.set_values([])
+        # KPIs + Régua de tempo
+        top = QFrame(); top.setObjectName("card"); apply_shadow(top, radius=18)
+        tl = QVBoxLayout(top); tl.setContentsMargins(16,16,16,16)
 
-    def _apply_filters(self):
-        df = self._df_base.copy()
-        if df is None or df.empty:
-            self._render_cards(pd.DataFrame(), pd.DataFrame())
-            self._fill_table(self._tbl_lanc, pd.DataFrame())
-            self._render_limites(None, None)
-            return
+        # KPIs
+        krow = QGridLayout()
+        self.kpi_abast = QLabel(); self.kpi_litros = QLabel(); self.kpi_valor = QLabel()
+        for lbl in (self.kpi_abast, self.kpi_litros, self.kpi_valor):
+            lbl.setFont(QFont("Arial", 12, weight=QFont.Weight.Bold))
+        krow.addWidget(QLabel("Abastecimentos:"), 0, 0); krow.addWidget(self.kpi_abast, 0, 1)
+        krow.addWidget(QLabel("Litros:"), 0, 2); krow.addWidget(self.kpi_litros, 0, 3)
+        krow.addWidget(QLabel("Valor (R$):"), 0, 4); krow.addWidget(self.kpi_valor, 0, 5)
+        tl.addLayout(krow)
 
-        veic_col = next((c for c in df.columns if "VEIC" in c.upper() or "PLACA" in c.upper()), None)
-        cond_col = next((c for c in df.columns if "MOTORISTA" in c.upper() or "CONDUTOR" in c.upper() or "RESPONS" in c.upper()), None)
-
-        sel_veic = set(self._cmb_veiculo.selected_values())
-        if sel_veic and veic_col:
-            df = df[df[veic_col].astype(str).isin(sel_veic)]
-
-        sel_cond = set(self._cmb_condutor.selected_values())
-        if sel_cond and cond_col:
-            df = df[df[cond_col].astype(str).isin(sel_cond)]
-
-        terms = self._search.values()
-        if terms:
-            df = df_apply_global_texts(df, terms)
-
-        self._df_work = df.reset_index(drop=True)
-        self._render_cards(self._df_work, self._df_limites)
-        self._fill_table(self._tbl_lanc, self._df_work)
-        self._update_analitico_source(self._df_work)
-        placa_sel = next(iter(sel_veic)) if sel_veic else None
-        self._render_limites(self._df_limites, placa_sel)
-
-        total = len(self._df_base)
-        vis = len(self._df_work)
-        self.set_footer_stats(f"Total: {total}", f"Visíveis: {vis}", "")
-
-    # ------------- Cenário Geral + Limites -------------
-    def _render_cards(self, df: pd.DataFrame, df_lim: pd.DataFrame):
-        # limpar
-        for layout in (self._cards_top, self._cards_bottom):
-            for i in reversed(range(layout.count())):
-                item = layout.takeAt(i)
-                if item and item.widget(): item.widget().deleteLater()
-
-        if df is None or df.empty:
-            self._cards_top.addWidget(self._make_card("Registros", "0"))
-            self._cards_bottom.addWidget(self._make_card("—", "—"))
-            self._cards_top.addStretch(1); self._cards_bottom.addStretch(1)
-            return
-
-        total_reg = len(df)
-        total_litros = float(df.get("LITROS_NUM", pd.Series(dtype=float)).sum())
-        total_valor  = float(df.get("VALOR_NUM", pd.Series(dtype=float)).sum())
-        km_rodado    = float(df.get("KM_RODADOS_NUM", pd.Series(dtype=float)).sum())
-        custo_km     = (total_valor / km_rodado) if km_rodado > 0 else 0.0
-        consumo_med  = (km_rodado / total_litros) if total_litros > 0 else 0.0
-        preco_med    = (total_valor / total_litros) if total_litros > 0 else 0.0
-
-        self._cards_top.addWidget(self._make_card("Registros", f"{total_reg}"))
-        self._cards_top.addWidget(self._make_card("Litros", _fmt_num(total_litros)))
-        self._cards_top.addWidget(self._make_card("Valor (R$)", _fmt_brl(total_valor)))
-        self._cards_top.addWidget(self._make_card("Km rodado", _fmt_num(km_rodado)))
-        self._cards_top.addWidget(self._make_card("Custo/km (R$)", _fmt_brl(custo_km)))
-        self._cards_top.addWidget(self._make_card("Média (km/L)", _fmt_num(consumo_med)))
-        self._cards_top.addStretch(1)
-
-        self._cards_bottom.addWidget(self._make_card("Preço médio (R$/L)", _fmt_brl(preco_med)))
-        self._cards_bottom.addStretch(1)
-
-    def _render_limites(self, df_lim: Optional[pd.DataFrame], placa_sel: Optional[str]):
-        for i in reversed(range(self._cards_lim.count())):
-            item = self._cards_lim.takeAt(i)
-            if item and item.widget(): item.widget().deleteLater()
-
-        if df_lim is None or df_lim.empty:
-            self._cards_lim.addWidget(self._make_card("Limite Atual", "—"))
-            self._cards_lim.addWidget(self._make_card("Utilizado", "—"))
-            self._cards_lim.addWidget(self._make_card("Saldo", "—"))
-            self._cards_lim.addWidget(self._make_card("Limite Próx. Período", "—"))
-            self._cards_lim.addStretch(1)
-            return
-
-        def col_sum(col):
-            return float(pd.to_numeric(df_lim.get(col, 0), errors="coerce").fillna(0).sum()) if col in df_lim.columns else 0.0
-
-        total_lim   = col_sum("LIMITE_ATUAL_NUM") if "LIMITE_ATUAL_NUM" in df_lim.columns else col_sum("LIMITE_ATUAL")
-        total_util  = col_sum("UTILIZADO_NUM")    if "UTILIZADO_NUM" in df_lim.columns else col_sum("UTILIZADO")
-        total_saldo = col_sum("SALDO_NUM")        if "SALDO_NUM" in df_lim.columns else col_sum("SALDO")
-        total_prox  = col_sum("LIMITE_PROX_NUM")  if "LIMITE_PROX_NUM" in df_lim.columns else col_sum("LIMITE_PROX")
-
-        if placa_sel:
-            dfx = df_lim[df_lim["PLACA"].astype(str).str.strip().str.upper() == str(placa_sel).strip().upper()]
-            pl_lim   = col_sum("LIMITE_ATUAL_NUM") if not dfx.empty and "LIMITE_ATUAL_NUM" in dfx.columns else float(pd.to_numeric(dfx.get("LIMITE_ATUAL",0), errors="coerce").fillna(0).sum())
-            pl_util  = col_sum("UTILIZADO_NUM")    if not dfx.empty and "UTILIZADO_NUM" in dfx.columns else float(pd.to_numeric(dfx.get("UTILIZADO",0), errors="coerce").fillna(0).sum())
-            pl_saldo = col_sum("SALDO_NUM")        if not dfx.empty and "SALDO_NUM" in dfx.columns else float(pd.to_numeric(dfx.get("SALDO",0), errors="coerce").fillna(0).sum())
-            pl_prox  = col_sum("LIMITE_PROX_NUM")  if not dfx.empty and "LIMITE_PROX_NUM" in dfx.columns else float(pd.to_numeric(dfx.get("LIMITE_PROX",0), errors="coerce").fillna(0).sum())
-        else:
-            pl_lim = pl_util = pl_saldo = pl_prox = 0.0
-
-        # placa (à esquerda) vs total (sub)
-        self._cards_lim.addWidget(self._make_card_dual("Limite Atual", _fmt_brl(pl_lim), "TOTAL: " + _fmt_brl(total_lim)))
-        self._cards_lim.addWidget(self._make_card_dual("Utilizado", _fmt_brl(pl_util), "TOTAL: " + _fmt_brl(total_util)))
-        self._cards_lim.addWidget(self._make_card_dual("Saldo", _fmt_brl(pl_saldo), "TOTAL: " + _fmt_brl(total_saldo)))
-        self._cards_lim.addWidget(self._make_card_dual("Limite Próx. Período", _fmt_brl(pl_prox), "TOTAL: " + _fmt_brl(total_prox)))
-        self._cards_lim.addStretch(1)
-
-    # ------------- Analítico (Visão Detalhada) -------------
-    def _build_analitico_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(4,4,4,4)
-
-        # régua de tempo local
-        top = QFrame(); top.setObjectName("card"); apply_shadow(top, radius=14)
-        tl = QHBoxLayout(top)
+        # Régua de tempo
         self.de_ini = QDateEdit(); self.de_fim = QDateEdit()
         for de in (self.de_ini, self.de_fim):
             de.setCalendarPopup(True); de.setDisplayFormat(DATE_FORMAT)
+            de.setMinimumDate(QDate(1752,9,14)); de.setSpecialValueText("")
+        self.de_ini.setDate(QDate(self._dmin.year, self._dmin.month, self._dmin.day))
+        self.de_fim.setDate(QDate(self._dmax.year, self._dmax.month, self._dmax.day))
+
+        from PyQt6.QtWidgets import QSlider
         self.sl_ini = QSlider(Qt.Orientation.Horizontal); self.sl_fim = QSlider(Qt.Orientation.Horizontal)
+        n = max(0, len(self._dates)-1)
         for s in (self.sl_ini, self.sl_fim):
-            s.setMinimum(0); s.setMaximum(0); s.setSingleStep(1); s.setPageStep(1)
-        tl.addWidget(QLabel("Início:")); tl.addWidget(self.de_ini)
-        tl.addSpacing(12); tl.addWidget(QLabel("Fim:")); tl.addWidget(self.de_fim)
-        tl.addSpacing(12); tl.addWidget(self.sl_ini, 1); tl.addWidget(self.sl_fim, 1)
-        v.addWidget(top)
+            s.setMinimum(0); s.setMaximum(n); s.setTickInterval(1); s.setSingleStep(1); s.setPageStep(1)
+        self.sl_ini.setValue(0); self.sl_fim.setValue(n)
 
-        # filtro global analítico
-        self.global_bar = GlobalFilterBar("Filtro global (Analítico):")
-        self.global_bar.changed.connect(self._refresh_analitico)
-        v.addWidget(self.global_bar)
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("Início:")); r1.addWidget(self.de_ini); r1.addSpacing(10)
+        r1.addWidget(QLabel("Fim:")); r1.addWidget(self.de_fim); r1.addStretch(1)
+        r2 = QHBoxLayout(); r2.addWidget(self.sl_ini); r2.addSpacing(8); r2.addWidget(self.sl_fim)
 
-        # abas de cenários
-        self.tabs_ana = QTabWidget(); v.addWidget(self.tabs_ana, 1)
+        tl.addLayout(r1); tl.addLayout(r2)
+        root.addWidget(top)
 
-        # geral
-        self.tbl_geral = self._prep_table(["Placa","Abastecimentos","Litros","Valor (R$)","Km Rodados"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_geral), "GERAL")
+        # ===== Filtros por coluna (modelo igual às outras telas) =====
+        filt = QFrame(); filt.setObjectName("card"); apply_shadow(filt, radius=18)
+        fl = QVBoxLayout(filt); fl.setContentsMargins(12,12,12,12)
+        self.f_scroll = QScrollArea(); self.f_scroll.setWidgetResizable(True)
+        self.f_host = QWidget(); self.f_grid = QGridLayout(self.f_host)
+        self.f_grid.setHorizontalSpacing(14); self.f_grid.setVerticalSpacing(8)
+        self.f_scroll.setWidget(self.f_host); fl.addWidget(self.f_scroll)
+        root.addWidget(filt)
 
-        # data
-        self.tbl_data = self._prep_table(["Ano-Mês","Abastecimentos","Litros","Valor (R$)"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_data), "DATA")
+        # campos filtráveis (por placa e atributos relevantes)
+        self.fcols = [
+            ("PLACA","Placa"),
+            ("MOTORISTA","Motorista"),
+            ("COMBUSTIVEL","Combustível"),
+            ("CIDADE_UF","Cidade/UF"),
+            ("ESTABELECIMENTO","Estabelecimento"),
+            ("RESPONSAVEL","Responsável"),
+            ("SERVICO","Serviço"),
+            ("PAGAMENTO","Pagamento"),
+            ("MODELO","Modelo"),
+            ("FAMILIA","Família"),
+            ("TIPO_FROTA","Tipo Frota"),
+        ]
+        self.f_mode = {}; self.f_ms = {}; self.f_texts = {}
+        self._mount_col_filters()
 
-        # placa
-        self.tbl_placa = self._prep_table(["Data","Motorista","Combustível","Litros","Vl/Litro","Valor (R$)","Estabelecimento","Cidade/UF"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_placa), "PLACA")
-        self.cb_placa = QComboBox()
-        self.tabs_ana.setTabToolTip(2, "Use a caixa PLACA na própria tabela de Lançamentos")
-        # combustível
-        self.tbl_comb = self._prep_table(["Combustível","Abastecimentos","Litros","Preço Médio (R$/L)","Valor (R$)"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_comb), "COMBUSTÍVEL")
+        # Abas
+        from PyQt6.QtWidgets import QTabWidget
+        self.tabs = QTabWidget(); root.addWidget(self.tabs, 1)
 
-        # cidade/uf
-        self.tbl_cid = self._prep_table(["Cidade/UF","Abastecimentos","Litros","Valor (R$)"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_cid), "CIDADE/UF")
+        # GERAL
+        self.tab_geral = QWidget(); vg = QVBoxLayout(self.tab_geral)
+        self.tbl_geral = QTableWidget(); self._prep(self.tbl_geral, ["Placa","Abastecimentos","Litros","Valor (R$)","Km Rodados"])
+        vg.addWidget(self.tbl_geral)
+        self.tabs.addTab(self.tab_geral, "GERAL")
 
-        # estabelecimento
-        self.tbl_est = self._prep_table(["Estabelecimento","Abastecimentos","Litros","Valor (R$)"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_est), "ESTABELECIMENTO")
+        # DATA
+        self.tab_data = QWidget(); vd = QVBoxLayout(self.tab_data)
+        self.tbl_data = QTableWidget(); self._prep(self.tbl_data, ["Ano-Mês","Abastecimentos","Litros","Valor (R$)"])
+        vd.addWidget(self.tbl_data)
+        self.tabs.addTab(self.tab_data, "DATA")
 
-        # responsável
-        self.tbl_resp = self._prep_table(["Responsável","Abastecimentos","Litros","Valor (R$)"])
-        self.tabs_ana.addTab(self._wrap_table(self.tbl_resp), "RESPONSÁVEL")
+        # PLACA
+        self.tab_placa = QWidget(); vp = QVBoxLayout(self.tab_placa)
+        rowp = QHBoxLayout(); rowp.addWidget(QLabel("Placa:"))
+        self.cb_placa = QComboBox(); self.cb_placa.currentTextChanged.connect(self._refresh_placa)
+        rowp.addWidget(self.cb_placa); rowp.addStretch(1); vp.addLayout(rowp)
+        self.lbl_placa_metrics = QLabel(""); vp.addWidget(self.lbl_placa_metrics)
+        self.tbl_placa = QTableWidget(); self._prep(self.tbl_placa, ["Data","Motorista","Combustível","Litros","Vl/Litro","Valor (R$)","Estabelecimento","Cidade/UF"])
+        vp.addWidget(self.tbl_placa)
+        self.tabs.addTab(self.tab_placa, "PLACA")
 
-        # sinais régua
+        # MOTORISTA
+        self.tab_motor = QWidget(); vm = QVBoxLayout(self.tab_motor)
+        rowm = QHBoxLayout(); rowm.addWidget(QLabel("Motorista:"))
+        self.cb_motor = QComboBox(); self.cb_motor.currentTextChanged.connect(self._refresh_motorista)
+        rowm.addWidget(self.cb_motor); rowm.addStretch(1); vm.addLayout(rowm)
+        self.lbl_motor_metrics = QLabel(""); vm.addWidget(self.lbl_motor_metrics)
+        self.tbl_motor = QTableWidget(); self._prep(self.tbl_motor, ["Placa","Abastecimentos","Litros","Valor (R$)"])
+        vm.addWidget(self.tbl_motor)
+        self.tabs.addTab(self.tab_motor, "MOTORISTA")
+
+        # COMBUSTÍVEL
+        self.tab_comb = QWidget(); vc = QVBoxLayout(self.tab_comb)
+        self.tbl_comb = QTableWidget(); self._prep(self.tbl_comb, ["Combustível","Abastecimentos","Litros","Preço Médio (R$/L)","Valor (R$)"])
+        vc.addWidget(self.tbl_comb)
+        self.tabs.addTab(self.tab_comb, "COMBUSTÍVEL")
+
+        # CIDADE/UF
+        self.tab_cid = QWidget(); vci = QVBoxLayout(self.tab_cid)
+        self.tbl_cid = QTableWidget(); self._prep(self.tbl_cid, ["Cidade/UF","Abastecimentos","Litros","Valor (R$)"])
+        vci.addWidget(self.tbl_cid)
+        self.tabs.addTab(self.tab_cid, "CIDADE/UF")
+
+        # ESTABELECIMENTO
+        self.tab_est = QWidget(); ve = QVBoxLayout(self.tab_est)
+        self.tbl_est = QTableWidget(); self._prep(self.tbl_est, ["Estabelecimento","Abastecimentos","Litros","Valor (R$)"])
+        ve.addWidget(self.tbl_est)
+        self.tabs.addTab(self.tab_est, "ESTABELECIMENTO")
+
+        # RESPONSÁVEL
+        self.tab_resp = QWidget(); vr = QVBoxLayout(self.tab_resp)
+        self.tbl_resp = QTableWidget(); self._prep(self.tbl_resp, ["Responsável","Abastecimentos","Litros","Valor (R$)"])
+        vr.addWidget(self.tbl_resp)
+        self.tabs.addTab(self.tab_resp, "RESPONSÁVEL")
+
+        # sinais de tempo
         self.de_ini.dateChanged.connect(self._dates_changed)
         self.de_fim.dateChanged.connect(self._dates_changed)
         self.sl_ini.valueChanged.connect(self._sliders_changed)
         self.sl_fim.valueChanged.connect(self._sliders_changed)
 
-        return w
+    def _mount_col_filters(self):
+        while self.f_grid.count():
+            item = self.f_grid.takeAt(0)
+            w = item.widget()
+            if w: w.setParent(None)
 
-    def _wrap_table(self, tbl: QTableWidget) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0,0,0,0)
-        v.addWidget(tbl, 1); return w
+        for i, (col, label) in enumerate(self.fcols):
+            box = QFrame(); vb = QVBoxLayout(box)
+            vb.addWidget(QLabel(label))
+            h1 = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"])
+            ms = CheckableComboBox(self.df_base.get(col, pd.Series([], dtype=str)).astype(str).dropna().unique())
+            mode.currentTextChanged.connect(self._apply_filters_and_refresh)
+            ms.changed.connect(self._apply_filters_and_refresh)
+            h1.addWidget(mode); h1.addWidget(ms)
+            vb.addLayout(h1)
 
-    def _prep_table(self, headers: List[str]) -> QTableWidget:
-        t = self._make_table()
-        t.setColumnCount(len(headers)); t.setHorizontalHeaderLabels(headers)
-        return t
+            h2 = QHBoxLayout()
+            le = QLineEdit(); le.setPlaceholderText(f"Filtrar {label}..."); le.textChanged.connect(self._apply_filters_and_refresh)
+            add = QPushButton("+"); add.setFixedWidth(28)
+            h2.addWidget(le); h2.addWidget(add); vb.addLayout(h2)
 
-    def _update_analitico_source(self, df: pd.DataFrame):
-        # define limites da régua
-        dts = df["DT"].dropna().dt.normalize() if "DT" in df.columns else pd.Series([], dtype="datetime64[ns]")
-        if dts.empty:
-            dmin = dmax = pd.Timestamp.today().normalize()
-            dates = [dmin]
-        else:
-            dmin = dts.min(); dmax = dts.max()
-            dates = list(pd.date_range(dmin, dmax, freq="D"))
-        self._ana_dates = dates
-        self._ana_dmin, self._ana_dmax = dmin, dmax
+            def _add_more(_=None, col_=col, vb_=vb):
+                le2 = QLineEdit(); le2.setPlaceholderText(f"Filtrar {label}..."); le2.textChanged.connect(self._apply_filters_and_refresh)
+                vb_.addWidget(le2)
+                self.f_texts[col_].append(le2)
+            add.clicked.connect(_add_more)
 
-        self.de_ini.blockSignals(True); self.de_fim.blockSignals(True)
-        self.de_ini.setDate(QDate(dmin.year, dmin.month, dmin.day))
-        self.de_fim.setDate(QDate(dmax.year, dmax.month, dmax.day))
-        self.de_ini.blockSignals(False); self.de_fim.blockSignals(False)
+            self.f_grid.addWidget(box, i//3, i%3)
+            self.f_mode[col] = mode
+            self.f_ms[col] = ms
+            self.f_texts[col] = [le]
 
-        for s in (self.sl_ini, self.sl_fim):
-            s.blockSignals(True); s.setMinimum(0); s.setMaximum(max(0,len(dates)-1)); s.blockSignals(False)
-        self.sl_ini.blockSignals(True); self.sl_fim.blockSignals(True)
-        self.sl_ini.setValue(0); self.sl_fim.setValue(max(0,len(dates)-1))
-        self.sl_ini.blockSignals(False); self.sl_fim.blockSignals(False)
 
-        self._df_analitico = df.copy()
-        self._refresh_analitico()
+    def _prep(self, tbl, headers):
+        tbl.setAlternatingRowColors(True)
+        tbl.setSortingEnabled(True)
+        tbl.horizontalHeader().setSortIndicatorShown(True)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tbl.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tbl.setColumnCount(len(headers))
+        tbl.setHorizontalHeaderLabels(headers)
 
+    # ------- tempo
     def _sliders_changed(self):
-        if not getattr(self, "_ana_dates", None): return
-        a = min(self.sl_ini.value(), self.sl_fim.value()); b = max(self.sl_ini.value(), self.sl_fim.value())
-        da = self._ana_dates[a]; db = self._ana_dates[b]
+        if not self._dates:
+            return
+        a = min(self.sl_ini.value(), self.sl_fim.value())
+        b = max(self.sl_ini.value(), self.sl_fim.value())
+        da = self._dates[a]; db = self._dates[b]
         self.de_ini.blockSignals(True); self.de_fim.blockSignals(True)
-        self.de_ini.setDate(QDate(da.year, da.month, da.day)); self.de_fim.setDate(QDate(db.year, db.month, db.day))
+        self.de_ini.setDate(QDate(da.year, da.month, da.day))
+        self.de_fim.setDate(QDate(db.year, db.month, db.day))
         self.de_ini.blockSignals(False); self.de_fim.blockSignals(False)
-        self._refresh_analitico()
+        self._apply_filters_and_refresh()
 
     def _dates_changed(self):
-        if not getattr(self, "_ana_dates", None): 
-            self._refresh_analitico(); 
+        if not self._dates:
+            self._apply_filters_and_refresh()
             return
-        ts_ini = pd.Timestamp(self.de_ini.date().year(), self.de_ini.date().month(), self.de_ini.date().day())
-        ts_fim = pd.Timestamp(self.de_fim.date().year(), self.de_fim.date().month(), self.de_fim.date().day())
-        idx = pd.Index(self._ana_dates)
-        i0 = int((idx - ts_ini).abs().argmin()); i1 = int((idx - ts_fim).abs().argmin())
+        def near_idx(qd):
+            ts = pd.Timestamp(qd.year(), qd.month(), qd.day())
+            arr = pd.Series(self._dates)
+            return int((arr - ts).abs().argmin())
+        i0 = near_idx(self.de_ini.date())
+        i1 = near_idx(self.de_fim.date())
         self.sl_ini.blockSignals(True); self.sl_fim.blockSignals(True)
-        self.sl_ini.setValue(min(i0,i1)); self.sl_fim.setValue(max(i0,i1))
+        self.sl_ini.setValue(min(i0, i1)); self.sl_fim.setValue(max(i0, i1))
         self.sl_ini.blockSignals(False); self.sl_fim.blockSignals(False)
-        self._refresh_analitico()
+        self._apply_filters_and_refresh()
 
-    def _refresh_analitico(self):
-        df = self._df_analitico.copy()
-        if df is None or df.empty:
-            for t in (self.tbl_geral,self.tbl_data,self.tbl_placa,self.tbl_comb,self.tbl_cid,self.tbl_est,self.tbl_resp):
-                self._fill_table(t, pd.DataFrame(), headers=t.horizontalHeaderItem(0).text() if t.columnCount()==1 else None)
-            return
 
-        # período local (régua)
+    def _apply_filters_and_refresh(self):
         q0, q1 = self.de_ini.date(), self.de_fim.date()
         t0 = pd.Timestamp(q0.year(), q0.month(), q0.day())
         t1 = pd.Timestamp(q1.year(), q1.month(), q1.day())
         a, b = (t0, t1) if t0 <= t1 else (t1, t0)
-        if "DT" in df.columns:
-            df = df[(df["DT"].notna()) & (df["DT"]>=a) & (df["DT"]<=b)].copy()
 
-        # filtro global analítico
-        texts = self.global_bar.values()
-        if texts:
-            df = df_apply_global_texts(df, texts)
+        df = self.df_base.copy()
+        mask = (df["DT"].notna()) & (df["DT"] >= a) & (df["DT"] <= b)
+        df = df[mask].reset_index(drop=True)
 
-        # GERAL (top N por valor)
-        g = df.groupby("PLACA", dropna=False).agg(
-            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum"), KM=("KM_RODADOS_NUM","sum")
+        # Filtros por coluna
+        for col, _label in self.fcols:
+            if col not in df.columns: 
+                continue
+            mode = self.f_mode[col].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[col].astype(str).str.strip()!=""]
+            elif mode == "Somente vazios":
+                df = df[df[col].astype(str).str.strip()==""]
+
+            sels = [s for s in self.f_ms[col].selected_values() if s]
+            if sels:
+                df = df[df[col].astype(str).isin(sels)]
+
+            termos = [le.text().strip().lower() for le in self.f_texts[col] if le.text().strip()]
+            if termos:
+                s = df[col].astype(str).str.lower()
+                import re as _re
+                rgx = "|".join(map(_re.escape, termos))
+                df = df[s.str.contains(rgx, na=False)]
+
+        for col, _label in self.fcols:
+            ms = self.f_ms[col]
+            if col not in df.columns:
+                continue
+            current_sel = ms.selected_values()
+            ms.set_values(sorted([x for x in df[col].astype(str).dropna().unique() if x]))
+            if current_sel:
+                for i in range(ms.count()):
+                    if ms.itemText(i) in current_sel:
+                        idx = ms.model().index(i, 0)
+                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+                ms._update_text()
+
+        self.df_f = df
+
+        # KPIs
+        self.kpi_abast.setText(str(len(self.df_f)))
+        self.kpi_litros.setText(f"{self.df_f['LITROS_NUM'].sum():.2f}")
+        self.kpi_valor.setText(f"{self.df_f['VALOR_NUM'].sum():.2f}")
+
+        # combos dependentes
+        placas = sorted([x for x in self.df_f["PLACA"].astype(str).unique() if x])
+        motors = sorted([x for x in self.df_f.get("MOTORISTA", pd.Series([], dtype=str)).astype(str).unique() if x])
+        self.cb_placa.blockSignals(True); self.cb_placa.clear(); self.cb_placa.addItems(placas); self.cb_placa.blockSignals(False)
+        self.cb_motor.blockSignals(True); self.cb_motor.clear(); self.cb_motor.addItems(motors); self.cb_motor.blockSignals(False)
+
+        # cenários (mesmos métodos que você já tem)
+        self._refresh_geral()
+        self._refresh_data()
+        self._refresh_placa()
+        self._refresh_motorista()
+        self._refresh_combustivel()
+        self._refresh_cidade()
+        self._refresh_estab()
+        self._refresh_resp()
+
+
+
+
+
+    def _fill(self, tbl, rows):
+        tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            for j, v in enumerate(r):
+                it = QTableWidgetItem(str(v))
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                tbl.setItem(i, j, it)
+        tbl.resizeColumnsToContents(); tbl.resizeRowsToContents()
+
+    # ------- cenários
+    def _refresh_geral(self):
+        d = self.df_f.copy()
+        if d.empty:
+            self._fill(self.tbl_geral, []); return
+        g = d.groupby("PLACA", dropna=False).agg(
+            QT=("PLACA", "count"),
+            LT=("LITROS_NUM", "sum"),
+            VL=("VALOR_NUM", "sum"),
+            KM=("KM_RODADOS_NUM","sum")
         ).reset_index().sort_values(["VL","LT","QT"], ascending=False).head(10)
         rows = [[r["PLACA"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}", f"{r['KM']:.0f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_geral, rows)
+        self._fill(self.tbl_geral, rows)
 
-        # DATA (ano-mês)
-        dtmp = df.copy()
-        if "DT" in dtmp.columns:
-            dtmp["YM"] = dtmp["DT"].dt.to_period("M").astype(str)
-        else:
-            dtmp["YM"] = ""
-        g = dtmp.groupby("YM").agg(QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")).reset_index().sort_values("YM")
+    def _refresh_data(self):
+        d = self.df_f.copy()
+        if d.empty:
+            self._fill(self.tbl_data, []); return
+        d["YM"] = d["DT"].dt.to_period("M").astype(str)
+        g = d.groupby("YM").agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum")
+        ).reset_index().sort_values("YM")
         rows = [[r["YM"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_data, rows)
+        self._fill(self.tbl_data, rows)
 
-        # PLACA (detalhes ordenados por data)
+    def _refresh_placa(self):
+        placa = self.cb_placa.currentText().strip()
+        d = self.df_f if not placa else self.df_f[self.df_f["PLACA"].astype(str)==placa]
+        if d.empty:
+            self.lbl_placa_metrics.setText(""); self._fill(self.tbl_placa, []); return
+        total_l = d["LITROS_NUM"].sum()
+        total_v = d["VALOR_NUM"].sum()
+        media_preco = (d["VALOR_NUM"].sum() / d["LITROS_NUM"].sum()) if d["LITROS_NUM"].sum() > 0 else 0.0
+        km = d["KM_RODADOS_NUM"].sum()
+        kml = (d["KM_RODADOS_NUM"].sum() / d["LITROS_NUM"].sum()) if d["LITROS_NUM"].sum() > 0 else 0.0
+        self.lbl_placa_metrics.setText(f"Abastecimentos: {len(d)} | Litros: {total_l:.2f} | Valor: R$ {total_v:.2f} | Preço médio: R$ {media_preco:.2f}/L | Km: {km:.0f} | Média: {kml:.2f} km/L")
         rows = []
-        for _, r in df.sort_values("DT").iterrows():
+        for _, r in d.sort_values("DT").iterrows():
             rows.append([
                 r["DT"].strftime("%d/%m/%Y %H:%M") if pd.notna(r["DT"]) else "",
-                r.get("MOTORISTA",""), r.get("COMBUSTIVEL",""),
+                r.get("MOTORISTA",""),
+                r.get("COMBUSTIVEL",""),
                 f"{float(r.get('LITROS_NUM',0)):.2f}",
                 f"{float(r.get('VL_LITRO_NUM',0)):.2f}",
                 f"{float(r.get('VALOR_NUM',0)):.2f}",
-                r.get("ESTABELECIMENTO",""), r.get("CIDADE_UF","")
+                r.get("ESTABELECIMENTO",""),
+                r.get("CIDADE_UF","")
             ])
-        self._fill_rows(self.tbl_placa, rows)
+        self._fill(self.tbl_placa, rows)
 
-        # COMBUSTÍVEL
-        g = df.groupby("COMBUSTIVEL", dropna=False).agg(
-            QT=("PLACA","count"), LT=("LITROS_NUM","sum"),
-            VL_MED=("VL_LITRO_NUM","mean"), VL=("VALOR_NUM","sum")
+    def _refresh_motorista(self):
+        nome = self.cb_motor.currentText().strip()
+        d = self.df_f if not nome else self.df_f[self.df_f.get("MOTORISTA","").astype(str)==nome]
+        if d.empty:
+            self.lbl_motor_metrics.setText(""); self._fill(self.tbl_motor, []); return
+        total_l = d["LITROS_NUM"].sum()
+        total_v = d["VALOR_NUM"].sum()
+        self.lbl_motor_metrics.setText(f"Abastecimentos: {len(d)} | Litros: {total_l:.2f} | Valor: R$ {total_v:.2f}")
+        g = d.groupby("PLACA", dropna=False).agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum")
+        ).reset_index().sort_values(["VL","LT","QT"], ascending=False)
+        rows = [[r["PLACA"], int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
+        self._fill(self.tbl_motor, rows)
+
+    def _refresh_combustivel(self):
+        d = self.df_f.copy()
+        if d.empty:
+            self._fill(self.tbl_comb, []); return
+        g = d.groupby("COMBUSTIVEL", dropna=False).agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL_MED=("VL_LITRO_NUM","mean"),
+            VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("COMBUSTIVEL",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL_MED']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_comb, rows)
+        self._fill(self.tbl_comb, rows)
 
-        # CIDADE/UF
-        g = df.groupby("CIDADE_UF", dropna=False).agg(
-            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
+    def _refresh_cidade(self):
+        d = self.df_f.copy()
+        if d.empty:
+            self._fill(self.tbl_cid, []); return
+        g = d.groupby("CIDADE_UF", dropna=False).agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("CIDADE_UF",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_cid, rows)
+        self._fill(self.tbl_cid, rows)
 
-        # ESTABELECIMENTO
-        g = df.groupby("ESTABELECIMENTO", dropna=False).agg(
-            QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")
+    def _refresh_estab(self):
+        d = self.df_f.copy()
+        if d.empty:
+            self._fill(self.tbl_est, []); return
+        g = d.groupby("ESTABELECIMENTO", dropna=False).agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum")
         ).reset_index().sort_values("VL", ascending=False).head(50)
         rows = [[r.get("ESTABELECIMENTO",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_est, rows)
+        self._fill(self.tbl_est, rows)
 
-        # RESPONSÁVEL (preferindo coluna do simplificado se existir)
-        d = df.copy()
+    def _refresh_resp(self):
+        d = self.df_f.copy()
+        # prioridade: RESPONSAVEL do simplificado (merge) > RESPONSAVEL do geral
         if "RESPONSAVEL_S" in d.columns:
             d["RESP_X"] = d["RESPONSAVEL_S"].where(d["RESPONSAVEL_S"].astype(str).str.strip()!="", d.get("RESPONSAVEL",""))
         else:
             d["RESP_X"] = d.get("RESPONSAVEL","")
-        g = d.groupby("RESP_X", dropna=False).agg(QT=("PLACA","count"), LT=("LITROS_NUM","sum"), VL=("VALOR_NUM","sum")).reset_index().sort_values("VL", ascending=False)
+        if d.empty:
+            self._fill(self.tbl_resp, []); return
+        g = d.groupby("RESP_X", dropna=False).agg(
+            QT=("PLACA","count"),
+            LT=("LITROS_NUM","sum"),
+            VL=("VALOR_NUM","sum")
+        ).reset_index().sort_values("VL", ascending=False)
         rows = [[r.get("RESP_X",""), int(r["QT"]), f"{r['LT']:.2f}", f"{r['VL']:.2f}"] for _, r in g.iterrows()]
-        self._fill_rows(self.tbl_resp, rows)
-
-    # ------------- UI utils -------------
-    def _make_card(self, title: str, value: str) -> QWidget:
-        card = QFrame(); card.setObjectName("card"); apply_shadow(card, radius=12)
-        v = QVBoxLayout(card); v.setContentsMargins(12, 10, 12, 10); v.setSpacing(2)
-        lab1 = QLabel(title); lab1.setStyleSheet(f"color:{THEME['muted']}; font-weight:600;")
-        lab2 = QLabel(value); lab2.setStyleSheet("font-size: 20px; font-weight: 700;")
-        v.addWidget(lab1); v.addWidget(lab2)
-        return card
-
-    def _make_card_dual(self, title: str, main: str, sub: str) -> QWidget:
-        card = QFrame(); card.setObjectName("card"); apply_shadow(card, radius=12)
-        v = QVBoxLayout(card); v.setContentsMargins(12, 10, 12, 10); v.setSpacing(2)
-        lab1 = QLabel(title); lab1.setStyleSheet(f"color:{THEME['muted']}; font-weight:600;")
-        lab2 = QLabel(main); lab2.setStyleSheet("font-size: 22px; font-weight: 700;")
-        lab3 = QLabel(sub);  lab3.setStyleSheet(f"color:{THEME['muted']};")
-        v.addWidget(lab1); v.addWidget(lab2); v.addWidget(lab3)
-        return card
-
-    def _fill_table(self, tbl: QTableWidget, df: pd.DataFrame, headers: Optional[List[str]] = None):
-        tbl.clear()
-        if df is None or df.empty:
-            if headers:
-                tbl.setColumnCount(len(headers)); tbl.setHorizontalHeaderLabels(headers)
-            else:
-                tbl.setColumnCount(0)
-            tbl.setRowCount(0)
-            return
-        cols = headers if headers else [str(c) for c in df.columns]
-        tbl.setColumnCount(len(cols)); tbl.setHorizontalHeaderLabels(cols)
-        max_rows = min(len(df), 10000)
-        tbl.setRowCount(max_rows)
-        for i in range(max_rows):
-            for j, c in enumerate(cols):
-                val = df.iat[i, df.columns.get_loc(c)] if c in df.columns else df.iat[i, j]
-                it = QTableWidgetItem("" if pd.isna(val) else str(val))
-                it.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                tbl.setItem(i, j, it)
-        tbl.resizeColumnsToContents(); tbl.resizeRowsToContents()
-
-    def _fill_rows(self, tbl: QTableWidget, rows: List[List[str]]):
-        tbl.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            for j, v in enumerate(r):
-                it = QTableWidgetItem(str(v)); it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                tbl.setItem(i, j, it)
-        tbl.resizeColumnsToContents(); tbl.resizeRowsToContents()
-        tbl.horizontalHeader().setStretchLastSection(True)
-
-    # ------------- Export -------------
-    def _export_csv(self):
-        if self._tbl_lanc.rowCount() == 0: return
-        path, _ = QFileDialog.getSaveFileName(self, "Salvar CSV", "combustivel.csv", "CSV (*.csv)")
-        if not path: return
-        df = self._grab_df_from_table(self._tbl_lanc)
-        export_to_csv(df, path)
-
-    def _export_xlsx(self):
-        if self._tbl_lanc.rowCount() == 0: return
-        path, _ = QFileDialog.getSaveFileName(self, "Salvar Excel", "combustivel.xlsx", "Excel (*.xlsx)")
-        if not path: return
-        df = self._grab_df_from_table(self._tbl_lanc)
-        export_to_excel(df, path, sheet_name="Combustivel")
-
-    def _grab_df_from_table(self, tbl: QTableWidget) -> pd.DataFrame:
-        cols = [tbl.horizontalHeaderItem(j).text() for j in range(tbl.columnCount())]
-        data = []
-        for i in range(tbl.rowCount()):
-            row = []
-            for j in range(tbl.columnCount()):
-                it = tbl.item(i, j)
-                row.append("" if it is None else it.text())
-            data.append(row)
-        return pd.DataFrame(data, columns=cols)
-
-    # ------------- Paths -------------
-    def _definir_arquivos(self):
-        p1, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Geral", "", "Planilhas (*.xlsx *.xls *.csv)")
-        if p1:
-            self.path_geral = p1; cfg_set("extrato_geral_path", p1)
-        p2, _ = QFileDialog.getOpenFileName(self, "Selecionar Extrato Simplificado", "", "Planilhas (*.xlsx *.xls *.csv)")
-        if p2:
-            self.path_simpl = p2; cfg_set("extrato_simplificado_path", p2)
-        p3 = QFileDialog.getExistingDirectory(self, "Selecionar Diretório de Lançamentos (opcional)")
-        if p3:
-            self.dir_many = p3; cfg_set("combustivel_dir", p3)
-        if p1 or p2 or p3:
-            self._reload()
+        self._fill(self.tbl_resp, rows)
 
 
-def build_combustivel_view() -> CombustivelView:
-    return CombustivelView()
+class CombustivelMenu(QWidget):
+    def __init__(self, open_cb):
+        super().__init__()
+        self.open_cb = open_cb
+        v = QVBoxLayout(self)
+        card = QFrame(); card.setObjectName("card"); apply_shadow(card, radius=18)
+        gv = QGridLayout(card); gv.setContentsMargins(18,18,18,18)
+        b1 = QPushButton("Visão Geral")
+        b2 = QPushButton("Visão Detalhada")
+        for b in (b1, b2):
+            b.setMinimumHeight(64); b.setFont(QFont("Arial", 16, weight=QFont.Weight.Bold))
+        # Visão Geral = sua tela atual (classe CombustivelWindow que já existe)
+        b1.clicked.connect(lambda: self.open_cb("Combustível - Visão Geral", lambda: CombustivelWindow()))
+        # Visão Detalhada = nova
+        b2.clicked.connect(lambda: self.open_cb("Combustível - Visão Detalhada", lambda: CombustivelDetalhadoWindow()))
+        gv.addWidget(b1, 0, 0); gv.addWidget(b2, 0, 1)
+        v.addWidget(card)

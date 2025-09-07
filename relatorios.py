@@ -269,21 +269,5 @@ class RelatoriosView(BaseView):
         export_to_excel(df, path, sheet_name="Relatorio")
 
 
-<<<<<<< HEAD
 def build_relatorios_view() -> RelatoriosView:
     return RelatoriosView()
-=======
-        self.tabela.resizeColumnsToContents()
-        self.tabela.horizontalHeader().setStretchLastSection(True)
-        self.tabela.resizeRowsToContents()
-
-
-
-    def exportar_excel(self):
-        try:
-            out = os.path.splitext(os.path.basename(self.path))[0] + "_filtrado.xlsx"
-            self.df_filtrado.to_excel(out, index=False)
-            QMessageBox.information(self, "Exportado", f"{out} criado.")
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
->>>>>>> f9b717829de913f73d13717fa914335134ff238d

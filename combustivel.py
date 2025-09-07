@@ -36,7 +36,6 @@ DEFAULT_SIMPL_PATH = cfg_get("extrato_simplificado_path") or ""
 DEFAULT_DIR = cfg_get("combustivel_dir") or ""
 
 
-<<<<<<< HEAD
 # ==================== Helpers num/str ====================
 def _num_from_text(s) -> float:
     if s is None: return 0.0
@@ -57,19 +56,6 @@ def _num_from_text(s) -> float:
             txt = txt.replace(",", ".")
     try: return float(txt)
     except: return 0.0
-=======
-
-
-class _TabelaComFiltros(QWidget):
-
-    def __init__(self, titulo):
-        super().__init__()
-        self.df_original = pd.DataFrame()
-        self.df_filtrado = pd.DataFrame()
-        self.mode_filtros = {}
-        self.multi_filtros = {}
-        self.global_boxes = []
->>>>>>> f9b717829de913f73d13717fa914335134ff238d
 
 def _fmt_num(v: float) -> str:
     s = f"{v:,.2f}"

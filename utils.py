@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+<<<<<<< HEAD
 THEME = {
     "primary": "#0B1E3B",
     "accent": "#D72638",
@@ -24,6 +25,28 @@ THEME = {
     "surface": "#FFFFFF",
     "text": "#101828",
     "muted": "#6B7280",
+=======
+from PyQt6.QtCore import QDate, Qt, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtWidgets import (
+    QGraphicsDropShadowEffect, QMessageBox, QComboBox, QDialog, QVBoxLayout, QHBoxLayout,
+    QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QFrame, QLineEdit,
+    QSplitter, QGroupBox, QWidget, QFileDialog, QScrollArea, QGridLayout
+)
+
+# =============================================================================
+# Configuração local (lê/escreve base.json do projeto) — sem import externo
+# =============================================================================
+BASE_DIR = os.path.expanduser("~")
+APP_DIR  = os.path.join(BASE_DIR, "Documentos", "GestaoFrotas")
+CFG_PATH = str(Path(__file__).resolve().parent / "base.json")
+
+_DEFAULTS_LOCAL = {
+    "multas_root": os.path.join(APP_DIR, "Multas"),
+    "geral_multas_csv": os.path.join(APP_DIR, "Multas", "geral_multas.csv"),
+    "pastores_dir": os.path.join(APP_DIR, "Pastores"),
+    "condutores_root": os.path.join(APP_DIR, "Condutores"),
+>>>>>>> f9b717829de913f73d13717fa914335134ff238d
 }
 
 STATUS_COLORS_HEX = {
@@ -366,6 +389,7 @@ try:
             yiq = (q.red()*299 + q.green()*587 + q.blue()*114) / 1000
             item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
 
+<<<<<<< HEAD
     def parse_permissions(perms):
         if isinstance(perms, list):
             return perms
@@ -373,6 +397,204 @@ try:
             s = perms.strip()
             if s.lower() in ("todos","all","*",""):
                 return 'todos'
+=======
+def parse_permissions(perms):
+    if isinstance(perms, list):
+        return perms
+    if isinstance(perms, str):
+        s = perms.strip()
+        if s.lower() in ("todos","all","*",""):
+            return 'todos'
+        try:
+            return ast.literal_eval(s)
+        except Exception:
+            return [p.strip() for p in s.split(",") if p.strip()] 
+    return 'todos'
+
+def apply_shadow(w, radius=20, blur=40, color=QColor(0,0,0,100)):
+    eff = QGraphicsDropShadowEffect()
+    eff.setBlurRadius(blur)
+    eff.setXOffset(0)
+    eff.setYOffset(8)
+    eff.setColor(color)
+    w.setGraphicsEffect(eff)
+    w.setStyleSheet(f"border-radius:{radius}px;")
+
+# >>> Abrir pasta no SO (Explorer/Finder/Linux)
+def open_folder(path: str) -> None:
+    """
+    Abre 'path' no gerenciador de arquivos do sistema.
+    Tenta: os.startfile (Windows), xdg-open (Linux), open (macOS) e, por fim, QDesktopServices.
+    """
+    try:
+        p = os.path.abspath(path)
+        if not os.path.exists(p):
+            os.makedirs(p, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(p)  # type: ignore[attr-defined]
+            return
+        # POSIX
+        if shutil.which("xdg-open"):
+            os.system(f'xdg-open "{p}" >/dev/null 2>&1 &')
+            return
+        if shutil.which("open"):
+            os.system(f'open "{p}" >/dev/null 2>&1 &')
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+    except Exception:
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception:
+            pass
+
+# =============================================================================
+# CSV / Multas helpers
+# =============================================================================
+def ensure_status_cols(df, csv_path=None):
+    """
+    Garante que existam, para cada coluna de data oficial em DATE_COLS,
+    a própria coluna e a coluna de status correspondente (*_STATUS).
+    Se csv_path for fornecido, persiste o CSV atualizado.
+    """
+    changed = False
+
+    # ✅ nunca use "or" com DataFrame
+    if isinstance(df, pd.DataFrame):
+        df = df.copy()
+    else:
+        df = pd.DataFrame()
+
+    for c in DATE_COLS:
+        if c not in df.columns:
+            df[c] = ""
+            changed = True
+        sc = f"{c}_STATUS"
+        if sc not in df.columns:
+            df[sc] = ""
+            changed = True
+
+    if changed and csv_path:
+        try:
+            df.to_csv(csv_path, index=False)
+        except Exception:
+            pass
+
+    return df
+
+def _multas_root():
+    return _cfg_get("multas_root")
+
+def _geral_multas_csv():
+    return _cfg_get("geral_multas_csv")
+
+def build_multa_dir(infrator, ano, mes, placa, notificacao, fluig):
+    # sanitização leve para nome de pasta
+    def _safe(s):
+        s = str(s or "").strip()
+        return re.sub(r'[\\/:*?"<>|]+', "_", s)
+    sub = f"{_safe(placa)}_{_safe(notificacao)}_FLUIG({_safe(fluig)})"
+    return os.path.join(_multas_root(), _safe(infrator), _safe(ano), _safe(mes), sub)
+
+def gerar_geral_multas_csv(root=None, output=None):
+    root = root or _multas_root()
+    output = output or _geral_multas_csv()
+    rows = []
+    if os.path.isdir(root):
+        for infrator in os.listdir(root):
+            infrator_dir = os.path.join(root, infrator)
+            if not os.path.isdir(infrator_dir):
+                continue
+            for ano in os.listdir(infrator_dir):
+                ano_dir = os.path.join(infrator_dir, ano)
+                if not os.path.isdir(ano_dir):
+                    continue
+                for mes in os.listdir(ano_dir):
+                    mes_dir = os.path.join(ano_dir, mes)
+                    if not os.path.isdir(mes_dir):
+                        continue
+                    for folder in os.listdir(mes_dir):
+                        fdir = os.path.join(mes_dir, folder)
+                        if not os.path.isdir(fdir):
+                            continue
+                        parts = folder.split('_')
+                        placa = parts[0] if len(parts)>0 else ""
+                        notificacao = parts[1] if len(parts)>1 else ""
+                        fluig = ""
+                        if len(parts)>2 and '(' in parts[2] and ')' in parts[2]:
+                            fluig = parts[2].split('(')[1].split(')')[0]
+                        rows.append({
+                            "INFRATOR": infrator,
+                            "ANO": ano,
+                            "MES": mes,
+                            "PLACA": placa,
+                            "NOTIFICACAO": notificacao,
+                            "FLUIG": fluig,
+                            "ORGÃO": "",
+                            "DATA INDICAÇÃO": "",
+                            "BOLETO": "",
+                            "LANÇAMENTO NFF": "",
+                            "VALIDACAO NFF": "",
+                            "CONCLUSAO": "",
+                            "SGU": "",
+                        })
+    df = pd.DataFrame(rows)
+    df = ensure_status_cols(df)
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    df.to_csv(output, index=False)
+
+def ensure_base_csv():
+    out = _geral_multas_csv()
+    if not os.path.exists(out):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        gerar_geral_multas_csv()
+
+# =============================================================================
+# Condutor helpers (índice por condutor)
+# =============================================================================
+def build_condutor_dir(nome: str, cpf: str) -> str:
+    cond_root = _cfg_get("condutores_root", "")
+    if not cond_root:
+        return ""
+    key = _only_digits(cpf) or _norm(nome) or "sem_identificacao"
+    path = os.path.join(cond_root, key)
+    return path
+
+def link_multa_em_condutor(nome: str, cpf: str, path_da_multa: str):
+    """
+    Cria/atualiza o índice do condutor com um 'atalho' (arquivo .txt apontando para a pasta real da multa).
+    Evita duplicação de PDFs.
+    """
+    cond_dir = build_condutor_dir(nome, cpf)
+    if not cond_dir:
+        return
+    os.makedirs(cond_dir, exist_ok=True)
+    base = os.path.basename(os.path.normpath(path_da_multa))
+    atalho = os.path.join(cond_dir, f"{base} - LINK.txt")
+    try:
+        with open(atalho, "w", encoding="utf-8") as f:
+            f.write(path_da_multa)
+    except Exception:
+        pass
+
+# =============================================================================
+# DIÁLOGOS (antes em dialogs.py)
+# =============================================================================
+class SummaryDialog(QDialog):
+    def __init__(self, df):
+        super().__init__()
+        self.setWindowTitle("Visão Geral")
+        self.resize(640, 480)
+        v = QVBoxLayout(self)
+        card = QFrame()
+        card.setObjectName("card")
+        apply_shadow(card, radius=16)
+        cv = QVBoxLayout(card)
+        t = QTableWidget()
+        t.setColumnCount(2)
+        t.setHorizontalHeaderLabels(["Coluna","Resumo"])
+        resumo = []
+        for col in df.columns:
+>>>>>>> f9b717829de913f73d13717fa914335134ff238d
             try:
                 return ast.literal_eval(s)
             except Exception:

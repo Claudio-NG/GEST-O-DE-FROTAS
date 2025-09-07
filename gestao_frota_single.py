@@ -13,6 +13,10 @@ from PyQt6.QtWidgets import (
     QDateEdit, QSlider
 )
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> f9b717829de913f73d13717fa914335134ff238d
 USERS_FILE = "users.csv"
 
 BASE_DIR = os.path.expanduser("~")
@@ -258,6 +262,243 @@ class BaseTab(QWidget):
             cfg_set(key, row.value())
         QMessageBox.information(self, "Base", "Configurações salvas com sucesso.")
 
+<<<<<<< HEAD
+=======
+# =========================
+# Aba “Alertas”
+# =========================
+class CheckableComboBox(QComboBox):
+    from PyQt6.QtCore import pyqtSignal
+    changed = pyqtSignal()
+    def __init__(self, values):
+        super().__init__()
+        self.set_values(values)
+        self.view().pressed.connect(self._toggle)
+        self._update_text()
+
+    def set_values(self, values):
+        self.blockSignals(True)
+        self.clear()
+        vals = sorted({str(v) for v in values if str(v).strip()})
+        if not vals:
+            self.addItem("(vazio)")
+            idx = self.model().index(0, 0)
+            self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        else:
+            for i, v in enumerate(vals):
+                self.addItem(v)
+                idx = self.model().index(i, 0)
+                self.model().setData(idx, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        self.blockSignals(False)
+        self._update_text()
+
+    def _toggle(self, index):
+        st = self.model().data(index, Qt.ItemDataRole.CheckStateRole)
+        ns = Qt.CheckState.Unchecked if st == Qt.CheckState.Checked else Qt.CheckState.Checked
+        self.model().setData(index, ns, Qt.ItemDataRole.CheckStateRole)
+        self._update_text(); self.changed.emit()
+
+    def selected_values(self):
+        out = []
+        for i in range(self.count()):
+            idx = self.model().index(i, 0)
+            st = self.model().data(idx, Qt.ItemDataRole.CheckStateRole)
+            if st == Qt.CheckState.Checked:
+                out.append(self.itemText(i))
+        return out
+
+    def _update_text(self):
+        n = len(self.selected_values())
+        self.setEditable(True); self.lineEdit().setReadOnly(True)
+        self.lineEdit().setText("Todos" if n == 0 else f"{n} selecionados")
+        self.setEditable(False)
+
+class AlertsTab(QWidget):
+ 
+    def __init__(self):
+        super().__init__()
+        self.df_original = pd.DataFrame()
+        self.df_filtrado = pd.DataFrame()
+        self.mode_filtros = {}
+        self.multi_filtros = {}
+        self.global_boxes = []
+
+        root = QVBoxLayout(self)
+
+        # Header
+        header = QFrame(); header.setObjectName("card"); apply_shadow(header, radius=18)
+        hv = QVBoxLayout(header)
+        actions = QHBoxLayout()
+        btn_reload = QPushButton("Recarregar"); btn_reload.clicked.connect(self.recarregar)
+        btn_clear  = QPushButton("Limpar filtros"); btn_clear.clicked.connect(self.limpar_filtros)
+        btn_export = QPushButton("Exportar Excel"); btn_export.clicked.connect(self.exportar_excel)
+        actions.addWidget(btn_reload); actions.addWidget(btn_clear); actions.addStretch(1); actions.addWidget(btn_export)
+        hv.addLayout(actions)
+
+        # Filtro global (+)
+        row_global = QHBoxLayout()
+        row_global.addWidget(QLabel("Filtro global:"))
+        def _add_box():
+            le = QLineEdit()
+            le.setPlaceholderText("Digite para filtrar em TODAS as colunas…")
+            le.textChanged.connect(self._apply_filters)
+            self.global_boxes.append(le)
+            row_global.addWidget(le, 1)
+        _add_box()
+        btn_plus = QPushButton("+"); btn_plus.setFixedWidth(28); btn_plus.clicked.connect(_add_box)
+        row_global.addWidget(btn_plus)
+        hv.addLayout(row_global)
+
+        # filtros por coluna
+        self.filters_scroll = QScrollArea(); self.filters_scroll.setWidgetResizable(True)
+        self.filters_host = QWidget(); self.filters_grid = QGridLayout(self.filters_host)
+        self.filters_grid.setContentsMargins(0,0,0,0)
+        self.filters_grid.setHorizontalSpacing(12)
+        self.filters_grid.setVerticalSpacing(8)
+        self.filters_scroll.setWidget(self.filters_host)
+        hv.addWidget(self.filters_scroll)
+
+        root.addWidget(header)
+
+        # Tabela
+        table_card = QFrame(); table_card.setObjectName("glass")
+        apply_shadow(table_card, radius=18, blur=60, color=QColor(0,0,0,80))
+        tv = QVBoxLayout(table_card)
+        self.tabela = QTableWidget()
+        self.tabela.setAlternatingRowColors(True)
+        self.tabela.setSortingEnabled(True)
+        self.tabela.horizontalHeader().setSortIndicatorShown(True)
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tabela.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tv.addWidget(self.tabela)
+        root.addWidget(table_card)
+
+        self.recarregar()
+
+    def _load_df(self):
+        path = cfg_get("geral_multas_csv")
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "Alertas", "Caminho do GERAL_MULTAS.csv não configurado.")
+            return pd.DataFrame()
+
+        base = ensure_status_cols(pd.read_csv(path, dtype=str).fillna(""), csv_path=path)
+
+        rows = []
+        use_cols = [c for c in DATE_COLS if c in base.columns]  # só DATA INDICAÇÃO / BOLETO / SGU
+        for _, r in base.iterrows():
+            fluig = str(r.get("FLUIG", "")).strip()
+            infr  = str(r.get("INFRATOR", "") or r.get("NOME", "")).strip()
+            placa = str(r.get("PLACA", "")).strip()
+            orgao = str(r.get("ORGÃO", "") or r.get("ORG", "") or r.get("ORGAO", "")).strip()  # 👈 novo
+
+            for col in use_cols:
+                dt = str(r.get(col, "")).strip()
+                st = str(r.get(f"{col}_STATUS", "")).strip()
+                if dt or st:
+                    rows.append([fluig, infr, placa, orgao, col, dt, st])
+
+        return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ORGÃO","ETAPA","DATA","STATUS"])
+
+
+
+
+
+
+
+
+
+
+    def recarregar(self):
+        self.df_original = self._load_df()
+        self.df_filtrado = self.df_original.copy()
+        self._montar_filtros()
+        self._fill_table(self.df_filtrado)
+
+    def _montar_filtros(self):
+        while self.filters_grid.count():
+            it = self.filters_grid.takeAt(0)
+            if it.widget():
+                it.widget().setParent(None)
+        self.mode_filtros.clear(); self.multi_filtros.clear()
+
+        cols = list(self.df_original.columns)
+        for i, col in enumerate(cols):
+            wrap = QFrame(); v = QVBoxLayout(wrap)
+            lab = QLabel(col); lab.setObjectName("colTitle"); v.addWidget(lab)
+            line = QHBoxLayout()
+            mode = QComboBox(); mode.addItems(["Todos","Excluir vazios","Somente vazios"]); mode.currentTextChanged.connect(self._apply_filters)
+            ms = CheckableComboBox(self.df_original[col].dropna().astype(str).unique()); ms.changed.connect(self._apply_filters)
+            line.addWidget(mode); line.addWidget(ms); v.addLayout(line)
+            self.mode_filtros[col] = mode; self.multi_filtros[col] = ms
+            self.filters_grid.addWidget(wrap, i//3, i%3)
+
+    def limpar_filtros(self):
+        for le in self.global_boxes:
+            le.blockSignals(True); le.clear(); le.blockSignals(False)
+        for mode in self.mode_filtros.values():
+            mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
+        for ms in self.multi_filtros.values():
+            vals = [ms.itemText(i) for i in range(ms.count())]
+            ms.set_values(vals)
+        self._apply_filters()
+
+    def _apply_filters(self):
+        df = self.df_original.copy()
+        texts = [le.text() for le in self.global_boxes if le.text().strip()]
+        df = df_apply_global_texts(df, texts)
+        for col in df.columns:
+            mode = self.mode_filtros[col].currentText()
+            if mode == "Excluir vazios":
+                df = df[df[col].astype(str).str.strip() != ""]
+            elif mode == "Somente vazios":
+                df = df[df[col].astype(str).str.strip() == ""]
+            sels = [s for s in self.multi_filtros[col].selected_values() if s]
+            if sels:
+                df = df[df[col].astype(str).isin(sels)]
+        self.df_filtrado = df
+        self._fill_table(self.df_filtrado)
+
+        # atualizar listas mantendo seleção
+        for col in self.df_filtrado.columns:
+            ms = self.multi_filtros[col]
+            current_sel = ms.selected_values()
+            ms.set_values(self.df_filtrado[col].dropna().astype(str).unique())
+            if current_sel:
+                for i in range(ms.count()):
+                    if ms.itemText(i) in current_sel:
+                        idx = ms.model().index(i, 0)
+                        ms.model().setData(idx, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+                ms._update_text()
+
+    def _fill_table(self, df):
+        headers = list(df.columns)
+        self.tabela.clear()
+        self.tabela.setColumnCount(len(headers))
+        self.tabela.setHorizontalHeaderLabels(headers)
+        self.tabela.setRowCount(len(df))
+        for i, (_, r) in enumerate(df.iterrows()):
+            for j, col in enumerate(headers):
+                val = "" if pd.isna(r[col]) else str(r[col])
+                it = QTableWidgetItem(val)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col.upper() == "STATUS":
+                    _paint_status(it, val)
+                self.tabela.setItem(i, j, it)
+        self.tabela.resizeColumnsToContents()
+        self.tabela.horizontalHeader().setStretchLastSection(True)
+        self.tabela.resizeRowsToContents()
+
+    def exportar_excel(self):
+        try:
+            self.df_filtrado.to_excel("alertas_filtrado.xlsx", index=False)
+            QMessageBox.information(self, "Exportado", "alertas_filtrado.xlsx criado.")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", str(e))
+
+# =========================
+# Diálogo de dependências
+# =========================
+>>>>>>> f9b717829de913f73d13717fa914335134ff238d
 class DependenciesDialog(QDialog):
     KEYS = [
         ("geral_multas_csv", "GERAL_MULTAS.csv"),

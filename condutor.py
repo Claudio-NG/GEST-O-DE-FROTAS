@@ -20,6 +20,8 @@ class _Sig(QObject):
     error = pyqtSignal(str)                 # msg
 
 
+
+
 class CondutorWindow(QWidget):
     """
     Novo fluxo:

@@ -624,6 +624,8 @@ class GlobalFilterBar(QFrame):
         btn_plus.clicked.connect(lambda: self._add_edit(lay))
         lay.addWidget(btn_plus)
 
+
+
     def _add_edit(self, lay):
         le = QLineEdit()
         le.setPlaceholderText("Digite para filtrar em TODAS as colunas…")

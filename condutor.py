@@ -16,6 +16,8 @@ class _Sig(QObject):
     ready = pyqtSignal(str, pd.DataFrame)
     error = pyqtSignal(str)
 
+
+
 class CondutorWindow(QWidget):
     def __init__(self):
         super().__init__()

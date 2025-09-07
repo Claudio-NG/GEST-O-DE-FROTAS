@@ -13,13 +13,10 @@ from gestao_frota_single import cfg_get, DATE_FORMAT
 from utils import apply_shadow, CheckableComboBox, df_apply_global_texts, ensure_status_cols
 
 
+
+
 class _TabelaComFiltros(QWidget):
-    """
-    Componente reutilizável com:
-    - Filtro global com botão +
-    - Filtros por coluna (modo: Todos/Excluir vazios/Somente vazios) + multiseleção
-    - Tabela com sort e auto-resize
-    """
+
     def __init__(self, titulo):
         super().__init__()
         self.df_original = pd.DataFrame()

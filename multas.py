@@ -492,6 +492,8 @@ class GeralMultasView(QWidget):
         table_card = QFrame(); table_card.setObjectName("glass"); apply_shadow(table_card, radius=18, blur=60, color=QColor(0, 0, 0, 80))
         tv = QVBoxLayout(table_card)
 
+
+
         self.tabela = QTableWidget()
         self.tabela.setAlternatingRowColors(True)
         self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)

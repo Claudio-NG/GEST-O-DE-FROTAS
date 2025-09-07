@@ -100,24 +100,35 @@ class AlertsTab(QWidget):
 
         self.recarregar()
 
+
+
     def _load_df(self):
         path = cfg_get("geral_multas_csv")
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "Alertas", "Caminho do GERAL_MULTAS.csv não configurado.")
             return pd.DataFrame()
+
         base = ensure_status_cols(pd.read_csv(path, dtype=str).fillna(""), csv_path=path)
+
         rows = []
         use_cols = [c for c in DATE_COLS if c in base.columns]  # só DATA INDICAÇÃO / BOLETO / SGU
         for _, r in base.iterrows():
             fluig = str(r.get("FLUIG", "")).strip()
             infr  = str(r.get("INFRATOR", "") or r.get("NOME", "")).strip()
             placa = str(r.get("PLACA", "")).strip()
+            orgao = str(r.get("ORGÃO", "") or r.get("ORG", "") or r.get("ORGAO", "")).strip()  # 👈 novo
+
             for col in use_cols:
                 dt = str(r.get(col, "")).strip()
                 st = str(r.get(f"{col}_STATUS", "")).strip()
                 if dt or st:
-                    rows.append([fluig, infr, placa, col, dt, st])
-        return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ETAPA","DATA","STATUS"])
+                    rows.append([fluig, infr, placa, orgao, col, dt, st])
+
+        return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ORGÃO","ETAPA","DATA","STATUS"])
+
+
+
+
 
     def recarregar(self):
         self.df_original = self._load_df()

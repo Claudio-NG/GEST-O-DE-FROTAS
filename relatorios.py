@@ -225,6 +225,8 @@ class RelatorioWindow(QWidget):
         self.tabela.horizontalHeader().setStretchLastSection(True)
         self.tabela.resizeRowsToContents()
 
+
+
     def exportar_excel(self):
         try:
             out = os.path.splitext(os.path.basename(self.path))[0] + "_filtrado.xlsx"

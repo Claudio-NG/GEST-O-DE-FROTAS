@@ -1,4 +1,5 @@
-import os, re, shutil, pandas as pd
+import os, re, shutil
+import pandas as pd
 from PyQt6.QtCore import Qt, QDate, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -16,14 +17,15 @@ from gestao_frota_single import (
 )
 from utils import (
     ensure_status_cols, apply_shadow, _paint_status, to_qdate_flexible,
-    build_multa_dir, _parse_dt_any, CheckableComboBox, SummaryDialog, ConferirFluigDialog
+    build_multa_dir, _parse_dt_any, CheckableComboBox, SummaryDialog, ConferirFluigDialog,
+    link_multa_em_condutor   # <<< novo
 )
 
+# ====== Configs locais ======
+DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"]
+IGNORED_COLS = {"LANÇAMENTOS DE NFF", "VALIDAÇÃO", "CONCLUSÃO", "LANÇAMENTO NFF", "VALIDACAO NFF", "CONCLUSAO"}
 
-DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"] 
-
-IGNORED_COLS = {"LANÇAMENTOS DE NFF", "VALIDAÇÃO", "CONCLUSÃO"}
-
+# ---------------------- DIALOGO: INSERIR ----------------------
 class InserirDialog(QDialog):
     def __init__(self, parent, prefill_fluig=None):
         super().__init__(parent)
@@ -32,6 +34,7 @@ class InserirDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         self._csv = cfg_get("geral_multas_csv")
+        os.makedirs(os.path.dirname(self._csv), exist_ok=True)
         self.df = ensure_status_cols(pd.read_csv(self._csv, dtype=str).fillna(""), csv_path=self._csv)
 
         # garantir COMENTARIO
@@ -77,6 +80,7 @@ class InserirDialog(QDialog):
             self.widgets["FLUIG"].setText(str(prefill_fluig).strip())
             self.on_fluig_leave(self.widgets["FLUIG"])
 
+    # preenchimento inteligente a partir do Detalhamento + Fase Pastores
     def _apply_fase_pastores(self, code):
         path = cfg_get("pastores_file")
         try:
@@ -102,16 +106,17 @@ class InserirDialog(QDialog):
 
     def on_fluig_leave(self, le: QLineEdit):
         code = str(le.text()).strip()
-        if code in self.df["FLUIG"].astype(str).tolist():
-            QMessageBox.warning(self, "Erro", "FLUIG existe"); le.clear(); return
+        if code and code in self.df["FLUIG"].astype(str).tolist():
+            QMessageBox.warning(self, "Erro", "FLUIG já existe"); le.clear(); return
         try:
             x = pd.read_excel(
                 cfg_get("detalhamento_path"),
                 usecols=["Nº Fluig", "Placa", "Nome", "AIT", "Data Infração", "Data Limite", "Status"],
                 dtype=str
             ).fillna("")
-        except Exception as e:
-            QMessageBox.warning(self, "Aviso", str(e)); return
+        except Exception:
+            self._apply_fase_pastores(code)
+            return
 
         row = x[x["Nº Fluig"].astype(str).str.strip() == code]
         if row.empty:
@@ -129,7 +134,6 @@ class InserirDialog(QDialog):
         # MES/ANO a partir da Data Infração (opcional)
         try:
             dt = pd.to_datetime(row["Data Infração"].iloc[0], dayfirst=False)
-    
             if "MES" in self.widgets:
                 self.widgets["MES"].setText(PORTUGUESE_MONTHS.get(dt.month, ""))
             if "ANO" in self.widgets:
@@ -137,7 +141,6 @@ class InserirDialog(QDialog):
         except:
             pass
 
-        
         try:
             d2 = pd.to_datetime(row["Data Limite"].iloc[0], dayfirst=False)
             if "DATA INDICAÇÃO" in self.widgets and isinstance(self.widgets["DATA INDICAÇÃO"], tuple):
@@ -149,6 +152,7 @@ class InserirDialog(QDialog):
         self._apply_fase_pastores(code)
 
     def salvar(self):
+        # coleta do formulário
         new = {}
         for c, w in self.widgets.items():
             if isinstance(w, tuple):
@@ -158,28 +162,36 @@ class InserirDialog(QDialog):
             else:
                 new[c] = w.currentText() if isinstance(w, QComboBox) else w.text().strip()
 
+        # valida FLUIG único
         if new.get("FLUIG", "") in self.df["FLUIG"].astype(str).tolist():
             QMessageBox.warning(self, "Erro", "FLUIG já existe"); return
 
+        # grava no CSV
         self.df.loc[len(self.df)] = new
         csv = cfg_get("geral_multas_csv")
         os.makedirs(os.path.dirname(csv), exist_ok=True)
-
         if "COMENTARIO" not in self.df.columns:
             self.df["COMENTARIO"] = ""
         self.df.to_csv(csv, index=False)
 
-        # criar pasta da multa e anexar PDF
+        # criar pasta da multa
         try:
             infr, ano, mes = new.get("INFRATOR", ""), new.get("ANO", ""), new.get("MES", "")
             placa, notificacao, fluig = new.get("PLACA", ""), new.get("NOTIFICACAO", ""), new.get("FLUIG", "")
             dest = build_multa_dir(infr, ano, mes, placa, notificacao, fluig)
-            os.path.isdir(dest) or os.makedirs(dest, exist_ok=True)
-            if not os.path.isdir(dest):
-                QMessageBox.warning(self, "Aviso", "Pasta não criada")
-        except:
-            pass
+            os.makedirs(dest, exist_ok=True)
 
+            # índice por condutor (link)
+            # tenta obter CPF se existir coluna; se não, passa vazio
+            cpf = new.get("CPF", "")
+            link_multa_em_condutor(infr, cpf, dest)
+
+            if not os.path.isdir(dest):
+                QMessageBox.warning(self, "Aviso", "Pasta da multa não foi criada (verifique permissões/caminho).")
+        except Exception as e:
+            QMessageBox.warning(self, "Aviso", f"Falha ao criar a pasta da multa: {e}")
+
+        # oferta para anexar o PDF na sequência
         self.anexar_pdf()
         QMessageBox.information(self, "Sucesso", "Multa inserida.")
         self.accept()
@@ -209,7 +221,6 @@ class InserirDialog(QDialog):
         except:
             pass
 
-
 # ---------------------- DIALOGO: EDITAR ----------------------
 class EditarDialog(QDialog):
     def __init__(self, parent):
@@ -222,6 +233,7 @@ class EditarDialog(QDialog):
         top = QHBoxLayout()
 
         csv = cfg_get("geral_multas_csv")
+        os.makedirs(os.path.dirname(csv), exist_ok=True)
         self.df = ensure_status_cols(pd.read_csv(csv, dtype=str).fillna(""), csv_path=csv)
         if "COMENTARIO" not in self.df.columns:
             self.df["COMENTARIO"] = ""
@@ -318,7 +330,6 @@ class EditarDialog(QDialog):
         QMessageBox.information(self, "Sucesso", "Multa editada.")
         self.accept()
 
-
 # ---------------------- DIALOGO: EXCLUIR ----------------------
 class ExcluirDialog(QDialog):
     def __init__(self, parent):
@@ -399,47 +410,11 @@ class ExcluirDialog(QDialog):
         QMessageBox.information(self, "Sucesso", "Multa excluída.")
         self.accept()
 
-
-
-# --- no topo do multas.py (se já existir, mantenha) ---
-import os
-import re
-import pandas as pd
-
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont, QFontMetrics
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QLabel, QScrollArea, QHBoxLayout, QComboBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
-)
-
-
-from utils import apply_shadow, ensure_status_cols, CheckableComboBox
-
-
-# ✅ só essas 3 datas contam para status/pintura
-DATE_COLS_MUL = ["DATA INDICAÇÃO", "BOLETO", "SGU"]
-
-# ✅ colunas que NÃO devem aparecer (nem em tabela, nem em filtros)
-IGNORED_COLS = {"LANÇAMENTO NFF", "VALIDACAO NFF", "CONCLUSAO"}
-
-
-def _paint_status(item: QTableWidgetItem, status: str):
-    st = (status or "").strip()
-    if not st:
-        return
-    if st in STATUS_COLOR:
-        bg = STATUS_COLOR[st]
-        item.setBackground(bg)
-        yiq = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000
-        item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
-
-
-# ---------------------- VIEW PRINCIPAL (GERAL) ----------------------
+# ---------------------- VIEW PRINCIPAL ----------------------
 class GeralMultasView(QWidget):
     """
-    - 1 (um) campo de texto global que filtra TODAS as colunas.
-    - Para cada coluna, mantém SOMENTE os botões (modo vazios/cheios + multiseleção de valores).
+    - Campo de texto global que filtra TODAS as colunas.
+    - Por coluna: modo (Todos/Excluir vazios/Somente vazios) + multiseleção.
     - Colunas LANÇAMENTO NFF / VALIDACAO NFF / CONCLUSAO são ignoradas.
     - Pintura de status só em: DATA INDICAÇÃO, BOLETO, SGU.
     """
@@ -470,7 +445,7 @@ class GeralMultasView(QWidget):
         header_card = QFrame(); header_card.setObjectName("card"); apply_shadow(header_card, radius=18)
         hv = QVBoxLayout(header_card)
 
-        title = QLabel("Multas em Aberto")
+        title = QLabel("Infrações e Multas")
         title.setFont(QFont("Arial", 18, weight=QFont.Weight.Bold))
         hv.addWidget(title)
 
@@ -548,13 +523,11 @@ class GeralMultasView(QWidget):
         if "COMENTARIO" not in self.df_original.columns:
             self.df_original["COMENTARIO"] = ""
             self.df_original.to_csv(cfg_get("geral_multas_csv"), index=False)
-
         self.df_filtrado = self.df_original.copy()
         self.cols_show = [c for c in self.df_original.columns if not c.endswith("_STATUS") and c not in IGNORED_COLS]
         self.atualizar_filtro()
 
     def mostrar_visao(self):
-        from relatorios import SummaryDialog  # se você já tiver esse dialog
         try:
             dlg = SummaryDialog(self.df_filtrado[self.cols_show])
             dlg.exec()
@@ -562,9 +535,7 @@ class GeralMultasView(QWidget):
             QMessageBox.information(self, "Visão Geral", "Resumo indisponível.")
 
     def limpar_filtros(self):
-        # limpa campo global
         self.global_box.blockSignals(True); self.global_box.clear(); self.global_box.blockSignals(False)
-        # reset botões por coluna
         for mode in self.mode_filtros.values():
             mode.blockSignals(True); mode.setCurrentIndex(0); mode.blockSignals(False)
         for ms in self.multi_filtros.values():
@@ -575,25 +546,20 @@ class GeralMultasView(QWidget):
     def atualizar_filtro(self):
         df = self.df_original.copy()
 
-        # mantém apenas "em aberto" se existir coluna STATUS geral
-        if "STATUS" in df.columns:
-            df = df[df["STATUS"].astype(str).str.lower() != "pago"]
+        # Se existir STATUS geral, você pode optar por filtrar "em aberto" aqui
+        # if "STATUS" in df.columns:
+        #     df = df[df["STATUS"].astype(str).str.lower() != "pago"]
 
-        # ---- filtro global (todas as colunas) ----
         from utils import df_apply_global_texts
         texts = [self.global_box.text()]
         df = df_apply_global_texts(df, texts)
 
-        # ---- botões por coluna (modo + multiseleção) ----
         for coluna in self.cols_show:
-            # modo vazios/cheios
             mode = self.mode_filtros[coluna].currentText()
             if mode == "Excluir vazios":
                 df = df[df[coluna].astype(str).str.strip() != ""]
             elif mode == "Somente vazios":
                 df = df[df[coluna].astype(str).str.strip() == ""]
-
-            # multiseleção
             sels = [s for s in self.multi_filtros[coluna].selected_values() if s]
             if sels:
                 df = df[df[coluna].astype(str).isin(sels)]
@@ -602,7 +568,6 @@ class GeralMultasView(QWidget):
         self.preencher_tabela(self.df_filtrado)
 
     def preencher_tabela(self, df):
-        # garantir COMENTARIO
         if "COMENTARIO" not in df.columns:
             df = df.copy(); df["COMENTARIO"] = ""
 
@@ -621,15 +586,11 @@ class GeralMultasView(QWidget):
                 it = QTableWidgetItem(val)
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 it.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
-                # pintar status SOMENTE nas 3 datas oficiais
                 if col in DATE_COLS_MUL:
                     st = str(df_idx.iloc[i].get(f"{col}_STATUS", ""))
                     _paint_status(it, st)
-
                 self.tabela.setItem(i, j, it)
 
-            # coluna Ações: Comentar
             key = str(df_idx.iloc[i].get("FLUIG", "")).strip()
             btn_comment = QPushButton("Comentar")
             if "COMENTARIO" in df_idx.columns:
@@ -656,7 +617,6 @@ class GeralMultasView(QWidget):
         if not key:
             return
         self.parent_for_edit.editar_with_key(key)
-
 
 # ---------------------- JANELA (CONTÊINER) ----------------------
 class InfraMultasWindow(QWidget):
@@ -699,9 +659,13 @@ class InfraMultasWindow(QWidget):
     def reload_geral(self):
         self.view_geral.recarregar()
 
-    # --------- Abrir Detalhamento (RelatorioWindow) ---------
+    # --------- Abrir Detalhamento ---------
     def abrir_detalhamento(self):
-        from relatorios import RelatorioWindow
+        try:
+            from relatorios import RelatorioWindow
+        except Exception:
+            QMessageBox.information(self, "Relatórios", "Módulo de relatórios não encontrado.")
+            return
         path = cfg_get("detalhamento_path")
         if not path or not os.path.exists(path):
             QMessageBox.information(self, "Detalhamento", "Configure a planilha de Detalhamento na Base.")
@@ -710,7 +674,7 @@ class InfraMultasWindow(QWidget):
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.show()
 
-    # --------- Conferir FLUIG (diferenças CSV x Detalhamento) ---------
+    # --------- Conferir FLUIG (CSV x Detalhamento) ---------
     def conferir_fluig(self):
         try:
             detalhamento_path = cfg_get("detalhamento_path")

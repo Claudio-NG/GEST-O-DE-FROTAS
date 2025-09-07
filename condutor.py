@@ -12,11 +12,9 @@ from PyQt6.QtWidgets import (
 from gestao_frota_single import cfg_get, DATE_FORMAT
 from utils import apply_shadow, GlobalFilterBar, df_apply_global_texts
 
-
 class _Sig(QObject):
     ready = pyqtSignal(str, pd.DataFrame)
     error = pyqtSignal(str)
-
 
 class CondutorWindow(QWidget):
     def __init__(self):

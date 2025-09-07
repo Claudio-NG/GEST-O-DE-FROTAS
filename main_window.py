@@ -377,7 +377,6 @@ class _AlertasDialog(QDialog):
         self.tabela.resizeRowsToContents()
 
 
-
 def _parse_dt(val):
     s = str(val).strip()
     if not s:
@@ -1041,8 +1040,10 @@ class MainWindow(QMainWindow):
             ("Infrações e Multas", self.open_multas),
             ("Combustível", self.open_combustivel),
             ("Relatórios", self.open_relatorios),
-            ("Alertas", self.mostrar_alertas),
+            ("Alertas", self.open_alertas),
+            ("Condutor", self.open_condutor),   # 👈 ADICIONE ESTA LINHA
         ]
+
 
         for i, (label, slot) in enumerate(buttons):
             b = QPushButton(label)
@@ -1064,7 +1065,17 @@ class MainWindow(QMainWindow):
         # Coloca a Home como primeira aba
         self.tab_widget.addTab(home, "Início")
 
-    # ===== Helpers de abas =====
+
+
+    def open_condutor(self):
+        try:
+            from condutor import CondutorWindow
+            self.add_or_focus("Condutor — Busca Integrada", lambda: CondutorWindow())
+        except Exception as e:
+            QMessageBox.warning(self, "Condutor", f"Não foi possível abrir a tela de Condutor.\n{e}")
+
+
+
     def add_or_focus(self, title, factory):
         """Evita duplicar abas: foca se já existir; senão cria."""
         for idx in range(self.tab_widget.count()):
@@ -1111,7 +1122,6 @@ class MainWindow(QMainWindow):
         self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
 
     def mostrar_alertas(self):
-        # Mostra a aba de Alertas (focada nas 3 datas oficiais)
         try:
             self.add_or_focus("Alertas", lambda: AlertsTab())
         except Exception as e:

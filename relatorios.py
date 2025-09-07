@@ -1,4 +1,6 @@
-import os, pandas as pd
+# relatorios.py
+import os
+import pandas as pd
 from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFontMetrics
 from PyQt6.QtWidgets import (
@@ -7,8 +9,10 @@ from PyQt6.QtWidgets import (
     QMessageBox, QComboBox, QSizePolicy, QFileDialog
 )
 
-from utils import ensure_status_cols, apply_shadow, CheckableComboBox, df_apply_global_texts
-from gestao_frota_single import DATE_COLS, STATUS_COLOR
+from utils import (
+    ensure_status_cols, apply_shadow, CheckableComboBox,
+    df_apply_global_texts, STATUS_COLOR
+)
 
 
 class RelatorioWindow(QWidget):
@@ -89,11 +93,13 @@ class RelatorioWindow(QWidget):
     def _abrir_arquivo(self):
         p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
         if p:
-            self.path = p
+            # remove o path anterior (se estava sendo observado) e observa o novo
             try:
-                self.watcher.removePath(self.path)
+                if os.path.exists(self.path):
+                    self.watcher.removePath(self.path)
             except Exception:
                 pass
+            self.path = p
             if os.path.exists(self.path):
                 self.watcher.addPath(self.path)
             self.carregar_dados(self.path)

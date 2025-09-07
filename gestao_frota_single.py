@@ -1,14 +1,21 @@
-import os, json, base64, re
+import os
+import json
+import base64
+import re
 from pathlib import Path
 import pandas as pd
 
+from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
+    QPushButton, QFrame, QFileDialog, QWidget, QMainWindow, QTabWidget, QMessageBox,
+    QGridLayout, QScrollArea, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView
+)
 
-
-import os, json
-from pathlib import Path
-from PyQt6.QtGui import QColor
-
-
+# =========================
+# Constantes principais
+# =========================
 USERS_FILE = "users.csv"
 
 BASE_DIR = os.path.expanduser("~")
@@ -18,9 +25,9 @@ MULTAS_ROOT      = os.path.join(APP_DIR, "Multas")
 GERAL_MULTAS_CSV = os.path.join(MULTAS_ROOT, "geral_multas.csv")
 PASTORES_DIR     = os.path.join(APP_DIR, "Pastores")
 
-
-DATE_FORMAT = "dd/MM/yyyy"                         # padrão do Qt
-DATE_COLS   = ["DATA INDICAÇÃO", "BOLETO", "SGU"]  # 3 colunas oficiais
+# Datas oficiais (padrão do Qt)
+DATE_FORMAT = "dd/MM/yyyy"
+DATE_COLS   = ["DATA INDICAÇÃO", "BOLETO", "SGU"]
 
 PORTUGUESE_MONTHS = {
     1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho",
@@ -35,21 +42,31 @@ STATUS_COLOR = {
     "": QColor("#BDBDBD"),
 }
 
-# Órgãos (faltava e gerava erro em multas.py)
-ORGAOS = ["DETRAN","DEMUTRAM","STTU","DNIT","PRF","SEMUTRAM","DMUT"]
+# Órgãos usados no módulo de multas
+ORGAOS = ["DETRAN", "DEMUTRAM", "STTU", "DNIT", "PRF", "SEMUTRAM", "DMUT"]
 
-# Módulos para a guia Início (se você usa um launcher em abas)
-MODULES = ["Início","Base","Alertas","Infrações e Multas","Relatórios","Combustível"]
+# Módulos que aparecem na “Home”
+MODULES = ["Início", "Base", "Alertas", "Infrações e Multas", "Relatórios", "Combustível"]
 
-# ---- Persistência (antigo config.py) ----
+STYLE = """
+QWidget { background: #FFFFFF; color: #0B2A4A; font-size: 14px; }
+QFrame#card { background: #ffffff; border: 1px solid #214D80; border-radius: 18px; }
+QFrame#glass { background: rgba(255,255,255,0.85); border: 1px solid rgba(11,42,74,0.25); border-radius: 18px; }
+QLabel#headline { font-weight: 800; font-size: 20px; color: #0B2A4A; }
+QPushButton { background: #0B2A4A; color:#ffffff; border:none; border-radius:12px; padding:10px 16px; font-weight:700; }
+QPushButton:hover { background: #123C69; }
+QPushButton#danger { background: #C62828; }
+QHeaderView::section { background: #0B2A4A; color:#fff; padding:8px 10px; border:none; font-weight:700; }
+"""
+
 CFG_PATH = str(Path(__file__).resolve().parent / "base.json")
 DEFAULTS = {
     "geral_multas_csv": GERAL_MULTAS_CSV,
     "multas_root": MULTAS_ROOT,
-    "pastores_dir": PASTORES_DIR,
     "detalhamento_path": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Detalhamento.xlsx"),
     "pastores_file": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Fase Pastores.xlsx"),
     "condutor_identificado_path": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Condutor Identificado.xlsx"),
+    "pastores_dir": PASTORES_DIR,
     "extrato_geral_path": "",
     "extrato_simplificado_path": "",
     "users_file": USERS_FILE,
@@ -62,108 +79,12 @@ def _cfg_load() -> dict:
     try:
         if os.path.exists(CFG_PATH):
             with open(CFG_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-    except:
-        pass
-    return {}
-
-def _cfg_save(data: dict) -> None:
-    try:
-        with open(CFG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
-        pass
-
-def cfg_get(key: str, default: str = "") -> str:
-    data = _cfg_load()
-    if key in data and str(data[key]).strip():
-        return data[key]
-    return DEFAULTS.get(key, default)
-
-def cfg_set(key: str, value: str) -> None:
-    data = _cfg_load()
-    data[key] = value
-    _cfg_save(data)
-
-def cfg_all() -> dict:
-    data = _cfg_load()
-    out = DEFAULTS.copy()
-    out.update(data)
-    return out
-
-from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
-    QPushButton, QFrame, QFileDialog, QWidget, QMainWindow, QTabWidget, QMessageBox,
-    QGridLayout, QScrollArea, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView
-)
-
-
-import os, json
-from pathlib import Path
-from PyQt6.QtGui import QColor
-
-
-USERS_FILE = "users.csv"
-
-BASE_DIR = os.path.expanduser("~")
-APP_DIR  = os.path.join(BASE_DIR, "Documentos", "GestaoFrotas")
-
-MULTAS_ROOT      = os.path.join(APP_DIR, "Multas")
-GERAL_MULTAS_CSV = os.path.join(MULTAS_ROOT, "geral_multas.csv")
-PASTORES_DIR     = os.path.join(APP_DIR, "Pastores")
-
-# -------- Datas (padrão pt-BR) --------
-DATE_FORMAT = "dd/MM/yyyy"              # Qt display format
-DATE_COLS   = ["DATA INDICAÇÃO", "BOLETO", "SGU"]  # 3 colunas oficiais
-
-PORTUGUESE_MONTHS = {
-    1:"Janeiro", 2:"Fevereiro", 3:"Março", 4:"Abril", 5:"Maio", 6:"Junho",
-    7:"Julho", 8:"Agosto", 9:"Setembro", 10:"Outubro", 11:"Novembro", 12:"Dezembro",
-}
-
-STATUS_OPS = ["", "Pendente", "Pago", "Vencido"]
-STATUS_COLOR = {
-    "Pago": QColor("#2ecc71"),
-    "Pendente": QColor("#ffd166"),
-    "Vencido": QColor("#ef5350"),
-    "": QColor("#BDBDBD"),
-}
-
-MODULES = [
-    "Início",
-    "Base",
-    "Alertas",
-    "Infrações e Multas",
-    "Relatórios",
-    "Combustível",
-]
-
-# -------- Persistência de configuração (antigo config.py) --------
-CFG_PATH = str(Path(__file__).resolve().parent / "base.json")
-DEFAULTS = {
-    "geral_multas_csv": GERAL_MULTAS_CSV,
-    "multas_root": MULTAS_ROOT,
-    "detalhamento_path": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Detalhamento.xlsx"),
-    "pastores_file": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Fase Pastores.xlsx"),
-    "condutor_identificado_path": os.path.join(APP_DIR, "CPO-VEÍCULOS", "Notificações de Multas - Condutor Identificado.xlsx"),
-    "pastores_dir": PASTORES_DIR,
-    "users_file": USERS_FILE,
-}
-
-def _cfg_load() -> dict:
-    try:
-        if os.path.exists(CFG_PATH):
-            with open(CFG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f) or {}
         else:
             data = {}
     except Exception:
         data = {}
-    # garante defaults
+    # garante defaults sempre disponíveis
     for k, v in DEFAULTS.items():
         data.setdefault(k, v)
     return data
@@ -187,106 +108,9 @@ def cfg_set(key: str, value):
 def cfg_all() -> dict:
     return _cfg_load()
 
-
-USERS_FILE = "users.csv"
-
-BASE_DIR = os.path.expanduser("~")
-APP_DIR  = os.path.join(BASE_DIR, "Documentos", "GestaoFrotas")
-
-MULTAS_ROOT      = os.path.join(APP_DIR, "Multas")
-GERAL_MULTAS_CSV = os.path.join(MULTAS_ROOT, "geral_multas.csv")
-
-PASTORES_DIR = os.path.join(APP_DIR, "Pastores")
-
-DATE_FORMAT = "dd/MM/yyyy"
-
-# Somente estas 3 datas são oficiais
-DATE_COLS = ["DATA INDICAÇÃO", "BOLETO", "SGU"]  # <- atende seu pedido
-
-PORTUGUESE_MONTHS = {
-    1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",
-    7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro",
-}
-
-
-STATUS_OPS = ["", "Pendente", "Pago", "Vencido"]
-
-STATUS_COLOR = {
-    "Pago": QColor("#2ecc71"),
-    "Pendente": QColor("#ffd166"),
-    "Vencido": QColor("#ef5350"),
-    "": QColor("#BDBDBD"),
-}
-
-MODULES = [
-    "Base",
-    "Alertas",
-    # você pode adicionar outras guias depois (Multas, Relatórios, Combustível)
-]
-
-STYLE = """
-QWidget { background: #FFFFFF; color: #0B2A4A; font-size: 14px; }
-QFrame#card { background: #ffffff; border: 1px solid #214D80; border-radius: 18px; }
-QFrame#glass { background: rgba(255,255,255,0.85); border: 1px solid rgba(11,42,74,0.25); border-radius: 18px; }
-QLabel#headline { font-weight: 800; font-size: 20px; color: #0B2A4A; }
-QPushButton { background: #0B2A4A; color:#ffffff; border:none; border-radius:12px; padding:10px 16px; font-weight:700; }
-QPushButton:hover { background: #123C69; }
-QPushButton#danger { background: #C62828; }
-QHeaderView::section { background: #0B2A4A; color:#fff; padding:8px 10px; border:none; font-weight:700; }
-"""
-
-BASE_JSON = str(Path(__file__).resolve().parent / "base.json")
-
-DEFAULTS = {
-    "geral_multas_csv": GERAL_MULTAS_CSV,
-    "multas_root": MULTAS_ROOT,
-    "pastores_dir": PASTORES_DIR,
-    "detalhamento_path": "",
-    "pastores_file": "",
-    "condutor_identificado_path": "",
-    "extrato_geral_path": "",
-    "extrato_simplificado_path": "",
-    "users_file": USERS_FILE,
-    "remember_user": "",
-    "remember_pwd": "",
-    "remember_flag": "0",
-}
-
-def _load_cfg():
-    if os.path.exists(BASE_JSON):
-        try:
-            with open(BASE_JSON, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except:
-            pass
-    return {}
-
-def _save_cfg(data):
-    try:
-        with open(BASE_JSON, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
-        pass
-
-def cfg_get(key):
-    data = _load_cfg()
-    if key in data and str(data[key]).strip():
-        return data[key]
-    return DEFAULTS.get(key, "")
-
-def cfg_set(key, value):
-    data = _load_cfg()
-    data[key] = value
-    _save_cfg(data)
-
-def cfg_all():
-    data = _load_cfg()
-    out = DEFAULTS.copy()
-    out.update(data)
-    return out
-
+# =========================
+# Pequenos helpers visuais
+# =========================
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect
 
 def apply_shadow(widget, radius=18, blur=40, color=QColor(0, 0, 0, 80)):
@@ -301,14 +125,13 @@ def _paint_status(item: QTableWidgetItem, status: str):
     if st in STATUS_COLOR:
         bg = STATUS_COLOR[st]
         item.setBackground(bg)
-        # contraste do texto
         yiq = (bg.red()*299 + bg.green()*587 + bg.blue()*114)/1000
         item.setForeground(QColor("#000000" if yiq >= 160 else "#FFFFFF"))
 
 def ensure_status_cols(df: pd.DataFrame, csv_path: str | None = None) -> pd.DataFrame:
     """
     Garante colunas *_STATUS para cada data oficial em DATE_COLS.
-    Se csv_path for fornecido, persiste de volta (sem perder colunas).
+    Se csv_path for fornecido, persiste de volta.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["FLUIG"] + DATE_COLS + [f"{c}_STATUS" for c in DATE_COLS])
@@ -322,7 +145,7 @@ def ensure_status_cols(df: pd.DataFrame, csv_path: str | None = None) -> pd.Data
     if csv_path:
         try:
             df.to_csv(csv_path, index=False)
-        except:
+        except Exception:
             pass
     return df
 
@@ -338,15 +161,14 @@ def to_qdate_flexible(s: str) -> QDate:
         dt = pd.to_datetime(s, dayfirst=True, errors="coerce")
         if pd.notna(dt):
             return QDate(int(dt.year), int(dt.month), int(dt.day))
-    except:
+    except Exception:
         pass
     return QDate()
 
 def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
     """
-    Aplica filtro 'contém' em TODAS as colunas (case-insensitive).
-    Cada caixa tem seus tokens (separados por espaço) combinados com AND,
-    e a verificação é OR entre colunas.
+    Filtro global "contém" (case-insensitive) em TODAS as colunas.
+    Cada caixa: tokens separados por espaço com AND; OR entre colunas.
     """
     if df is None or df.empty:
         return df
@@ -369,6 +191,9 @@ def df_apply_global_texts(df: pd.DataFrame, texts: list[str]) -> pd.DataFrame:
         mask_total &= mask_box
     return df[mask_total].copy()
 
+# =========================
+# Login (com “lembrar”)
+# =========================
 def _enc(txt: str) -> str:
     return base64.b64encode((txt or "").encode("utf-8")).decode("ascii")
 
@@ -379,9 +204,6 @@ def _dec(txt: str) -> str:
         return ""
 
 class AuthService:
-    """
-    Versão simples: se tem usuário/senha, entra. Integra com o remember em base.json.
-    """
     def __init__(self):
         self.current_user: str | None = None
 
@@ -424,12 +246,10 @@ class LoginView(QDialog):
         v.addLayout(btn_row)
         root.addWidget(card)
 
-        # eventos
         btn_login.clicked.connect(self.do_login)
         btn_cancel.clicked.connect(self.reject)
         self.ed_pass.returnPressed.connect(self.do_login)
 
-        # pré-preenchimento lembrado (base.json)
         remembered_user = cfg_get("remember_user") or ""
         remembered_pwd  = _dec(cfg_get("remember_pwd") or "")
         remembered_flag = cfg_get("remember_flag") == "1"
@@ -440,8 +260,8 @@ class LoginView(QDialog):
     def do_login(self):
         ok, msg = self.auth.login(self.ed_user.text(), self.ed_pass.text())
         if not ok:
-            QMessageBox.warning(self, "Login", msg); return
-        # persistir lembrar
+            QMessageBox.warning(self, "Login", msg)
+            return
         if self.ck_rem.isChecked():
             cfg_set("remember_user", self.ed_user.text().strip())
             cfg_set("remember_pwd",  _enc(self.ed_pass.text()))
@@ -452,9 +272,9 @@ class LoginView(QDialog):
             cfg_set("remember_flag", "0")
         self.accept()
 
-# =========================================================
-# =================== BASE (paths/cfg) ====================
-# =========================================================
+# =========================
+# Aba “Base” (caminhos)
+# =========================
 class _PathRow(QWidget):
     def __init__(self, label, key, mode="file"):
         super().__init__()
@@ -465,7 +285,6 @@ class _PathRow(QWidget):
         self.ed = QLineEdit(cfg_get(key))
         self.btn = QPushButton("..."); self.btn.setFixedWidth(36)
 
-        # Correção: clicked envia bool; assinamos o parâmetro e ignoramos
         def _pick(_checked=False, le_=self.ed, label_=label):
             if self.mode == "dir":
                 p = QFileDialog.getExistingDirectory(self, f"Selecionar {label_}", self.ed.text().strip() or os.getcwd())
@@ -519,13 +338,10 @@ class BaseTab(QWidget):
             cfg_set(key, row.value())
         QMessageBox.information(self, "Base", "Configurações salvas com sucesso.")
 
-# =========================================================
-# ===================== ALERTAS (tab) =====================
-# =========================================================
+# =========================
+# Aba “Alertas”
+# =========================
 class CheckableComboBox(QComboBox):
-    """
-    Combo multi-seleção com checkboxes embutidos.
-    """
     from PyQt6.QtCore import pyqtSignal
     changed = pyqtSignal()
     def __init__(self, values):
@@ -573,11 +389,7 @@ class CheckableComboBox(QComboBox):
 
 class AlertsTab(QWidget):
     """
-    Tabela bem organizada, seguindo o padrão:
-    - 1 (ou mais) campo(s) de texto global(is) com botão +
-    - Por coluna: modo (Todos/Excluir vazios/Somente vazios) + multiseleção
-    - Datas oficiais: DATA INDICAÇÃO, BOLETO, SGU
-    - Cores de STATUS
+    Tabela de alertas consolidando apenas as 3 datas oficiais + *_STATUS.
     """
     def __init__(self):
         super().__init__()
@@ -616,7 +428,9 @@ class AlertsTab(QWidget):
         # filtros por coluna
         self.filters_scroll = QScrollArea(); self.filters_scroll.setWidgetResizable(True)
         self.filters_host = QWidget(); self.filters_grid = QGridLayout(self.filters_host)
-        self.filters_grid.setContentsMargins(0,0,0,0); self.filters_grid.setHorizontalSpacing(12); self.filters_grid.setVerticalSpacing(8)
+        self.filters_grid.setContentsMargins(0,0,0,0)
+        self.filters_grid.setHorizontalSpacing(12)
+        self.filters_grid.setVerticalSpacing(8)
         self.filters_scroll.setWidget(self.filters_host)
         hv.addWidget(self.filters_scroll)
 
@@ -643,6 +457,7 @@ class AlertsTab(QWidget):
             QMessageBox.warning(self, "Alertas", "Caminho do GERAL_MULTAS.csv não configurado.")
             return pd.DataFrame()
         base = ensure_status_cols(pd.read_csv(path, dtype=str).fillna(""), csv_path=path)
+
         rows = []
         use_cols = [c for c in DATE_COLS if c in base.columns]  # DATA INDICAÇÃO / BOLETO / SGU
         for _, r in base.iterrows():
@@ -654,6 +469,7 @@ class AlertsTab(QWidget):
                 st = str(r.get(f"{col}_STATUS", "")).strip()
                 if dt or st:
                     rows.append([fluig, infr, placa, col, dt, st])
+
         return pd.DataFrame(rows, columns=["FLUIG","INFRATOR","PLACA","ETAPA","DATA","STATUS"])
 
     def recarregar(self):
@@ -665,7 +481,8 @@ class AlertsTab(QWidget):
     def _montar_filtros(self):
         while self.filters_grid.count():
             it = self.filters_grid.takeAt(0)
-            if it.widget(): it.widget().setParent(None)
+            if it.widget():
+                it.widget().setParent(None)
         self.mode_filtros.clear(); self.multi_filtros.clear()
 
         cols = list(self.df_original.columns)
@@ -742,14 +559,11 @@ class AlertsTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Erro", str(e))
 
-# =========================================================
-# ===================== MAIN WINDOW =======================
-# =========================================================
+# =========================
+# Diálogo de dependências
+# =========================
 class DependenciesDialog(QDialog):
-    """
-    Pede/valida os caminhos antes de abrir o sistema.
-    (Corrigido: clicked envia bool; assinamos e ignoramos. Implementado _save_and_accept)
-    """
+
     KEYS = [
         ("geral_multas_csv", "GERAL_MULTAS.csv"),
         ("detalhamento_path", "Detalhamento.xlsx"),
@@ -802,56 +616,30 @@ class DependenciesDialog(QDialog):
             cfg_set(k, le.text().strip())
         self.accept()
 
-
-
-# --- gestao_frota_single.py (adicione/substitua esta classe inteira) ---
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QTabWidget, QVBoxLayout, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QPushButton, QFileDialog, QMessageBox
-)
-
-# Imports internos do seu projeto
-from gestao_frota_single import cfg_get, MODULES  # já existem neste arquivo
-from utils import apply_shadow  # sombra padrão do seu tema
-from relatorios import RelatorioWindow
-from multas import InfraMultasWindow
-from combustivel import CombustivelWindow
-
-# Tentamos obter a AlertsTab onde ela estiver (normalmente em main_window.py)
-try:
-    from main_window import AlertsTab
-except Exception:
-    try:
-        from .main_window import AlertsTab
-    except Exception:
-        AlertsTab = None  # se não existir, mostramos aviso ao clicar
-
+# =========================
+# Main Window (sem imports pesados no topo)
+# =========================
 class MainWindow(QMainWindow):
     """
     Janela principal em abas:
       - Aba 'Início' com botões grandes
       - Cada módulo abre em uma nova aba (sem duplicar)
-    Botões: Base, Infrações e Multas, Combustível, Relatórios, Alertas
     """
     def __init__(self, user_email: str | None = None):
         super().__init__()
         self.setWindowTitle("GESTÃO DE FROTAS")
         self.resize(1280, 860)
 
-        # Abas
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.setCentralWidget(self.tab_widget)
 
-        # ==== ABA INÍCIO ====
+        # ==== Home ====
         home = QWidget()
         hv = QVBoxLayout(home)
 
-        # Cabeçalho
         title_card = QFrame(); title_card.setObjectName("glass")
         apply_shadow(title_card, radius=20, blur=60, color=QColor(0, 0, 0, 60))
         tv = QVBoxLayout(title_card); tv.setContentsMargins(24, 24, 24, 24)
@@ -866,7 +654,6 @@ class MainWindow(QMainWindow):
                          alignment=Qt.AlignmentFlag.AlignCenter)
         hv.addWidget(title_card)
 
-        # Cartão com botões
         grid_card = QFrame(); grid_card.setObjectName("card"); apply_shadow(grid_card, radius=18)
         gv = QGridLayout(grid_card); gv.setContentsMargins(18, 18, 18, 18)
 
@@ -877,7 +664,6 @@ class MainWindow(QMainWindow):
             ("Relatórios", self.open_relatorios),
             ("Alertas", self.open_alertas),
         ]
-
         for i, (label, slot) in enumerate(buttons):
             b = QPushButton(label)
             b.setMinimumHeight(64)
@@ -887,7 +673,6 @@ class MainWindow(QMainWindow):
 
         hv.addWidget(grid_card)
 
-        # Barra inferior
         bar = QHBoxLayout()
         out = QPushButton("Sair"); out.setObjectName("danger")
         out.setMinimumHeight(44)
@@ -895,12 +680,10 @@ class MainWindow(QMainWindow):
         bar.addStretch(1); bar.addWidget(out)
         hv.addLayout(bar)
 
-        # Coloca a Home
         self.tab_widget.addTab(home, "Início")
 
-    # ===== Helpers =====
+    # Helpers
     def add_or_focus(self, title, factory):
-        """Se a aba já existe, foca; senão cria."""
         for idx in range(self.tab_widget.count()):
             if self.tab_widget.tabText(idx).strip().lower() == str(title).strip().lower():
                 self.tab_widget.setCurrentIndex(idx)
@@ -910,65 +693,65 @@ class MainWindow(QMainWindow):
         self.tab_widget.setCurrentWidget(w)
 
     def close_tab(self, index: int):
-        """Não permite fechar a Home (índice 0)."""
-        if index == 0:
+        if index == 0:  # Home não fecha
             return
         w = self.tab_widget.widget(index)
         self.tab_widget.removeTab(index)
         w.deleteLater()
 
-    # ===== Ações dos botões =====
+    # Ações (imports locais para evitar ciclo)
     def open_base(self):
         try:
-            # BaseTab já existe no mesmo arquivo (gestao_frota_single)
-            from gestao_frota_single import BaseTab
             self.add_or_focus("Base", lambda: BaseTab())
         except Exception as e:
             QMessageBox.warning(self, "Base", f"Não foi possível abrir a Base.\n{e}")
 
     def open_multas(self):
-        # Janela de Infrações/Multas já pronta
+        try:
+            from multas import InfraMultasWindow
+        except ImportError:
+            try:
+                from multas import MultasWindow as InfraMultasWindow  # fallback se o nome for diferente
+            except Exception as e:
+                QMessageBox.warning(self, "Multas", f"Não foi possível importar a janela de Multas.\n{e}")
+                return
         self.add_or_focus("Infrações e Multas", lambda: InfraMultasWindow())
 
     def open_combustivel(self):
-        # Usa seus paths configuráveis (aplique sua correção de cfg_get no módulo)
         try:
+            from combustivel import CombustivelWindow
             self.add_or_focus("Combustível", lambda: CombustivelWindow())
         except Exception as e:
             QMessageBox.warning(self, "Combustível", str(e))
 
     def open_relatorios(self):
-        # Pede um arquivo e abre o Relatório
         p, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Planilhas (*.xlsx *.xls *.csv)")
         if not p:
             return
-        self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
+        try:
+            from relatorios import RelatorioWindow
+            self.add_or_focus("Relatórios", lambda: RelatorioWindow(p))
+        except Exception as e:
+            QMessageBox.warning(self, "Relatórios", f"Erro abrindo Relatórios.\n{e}")
 
     def open_alertas(self):
-        # Aba Alertas mostrando as 3 datas oficiais + *_STATUS
-        if AlertsTab is None:
-            QMessageBox.warning(self, "Alertas", "Classe AlertsTab não encontrada.")
-            return
+        # Usa a AlertsTab definida neste arquivo para evitar importações cruzadas
         self.add_or_focus("Alertas", lambda: AlertsTab())
-
 
 
 def run():
     app = QApplication([])
     app.setStyleSheet(STYLE)
 
-    # 1) Login
     auth = AuthService()
     dlg = LoginView(auth)
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return
 
-    # 2) Dependências antes de abrir
     deps = DependenciesDialog()
     if deps.exec() != QDialog.DialogCode.Accepted:
         return
 
-    # 3) Main em guias
     email = getattr(auth, "current_user", None)
     win = MainWindow(email)
     win.show()
